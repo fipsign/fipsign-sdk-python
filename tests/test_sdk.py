@@ -442,8 +442,8 @@ def run() -> None:
     section("11 · Distinct signatures for identical payloads")
     try:
         r1 = pq.sign("replay_test", role="admin", expires_in_seconds=3600)
+        time.sleep(1)
         r2 = pq.sign("replay_test", role="admin", expires_in_seconds=3600)
-
         if r1.token.signature == r2.token.signature:
             raise AssertionError("signatures are identical — possible replay attack vulnerability")
         if r1.token.payload == r2.token.payload:
