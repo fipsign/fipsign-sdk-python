@@ -1,3 +1,48 @@
+Metadata-Version: 2.4
+Name: fipsign-sdk
+Version: 0.5.2
+Summary: Post-quantum signing SDK for Python — ML-DSA-65 (NIST FIPS 204)
+Author-email: FIPSign <sdk@fipsign.dev>
+License: MIT
+Project-URL: Homepage, https://fipsign.dev
+Project-URL: Dashboard, https://app.fipsign.dev
+Project-URL: Guide, https://fipsign.dev/guide
+Project-URL: Repository, https://github.com/fipsign/fipsign-sdk-python
+Project-URL: Bug Tracker, https://github.com/fipsign/fipsign-sdk-python/issues
+Keywords: post-quantum,cryptography,signing,ml-dsa,fips,pqc,auth
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Security :: Cryptography
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Classifier: Typing :: Typed
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: requests>=2.28
+Provides-Extra: async
+Requires-Dist: httpx>=0.24; extra == "async"
+Provides-Extra: flask
+Requires-Dist: flask>=2.0; extra == "flask"
+Provides-Extra: fastapi
+Requires-Dist: fastapi>=0.95; extra == "fastapi"
+Requires-Dist: python-multipart>=0.0.6; extra == "fastapi"
+Provides-Extra: dev
+Requires-Dist: pytest>=7; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21; extra == "dev"
+Requires-Dist: httpx>=0.24; extra == "dev"
+Requires-Dist: flask>=2.0; extra == "dev"
+Requires-Dist: fastapi>=0.95; extra == "dev"
+Requires-Dist: uvicorn>=0.20; extra == "dev"
+Requires-Dist: build; extra == "dev"
+Requires-Dist: twine; extra == "dev"
+Dynamic: license-file
+
 # fipsign-sdk
 
 Post-quantum signing SDK for Python.
