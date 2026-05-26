@@ -508,6 +508,194 @@ def run() -> None:
     except Exception as err:
         fail_test("webhook delivery confirmation", err)
 
+# ─── 13 Certificate Authority ─────────────────────────────────────────────
+    section("13 · Certificate Authority")
+
+    ROOT_CERT_JSON = os.environ.get("FIPSIGN_ROOT_CERT_JSON")
+    root_cert = None
+    if ROOT_CERT_JSON:
+        try:
+            from fipsign.types import PQCert as _PQCert
+            root_cert = _PQCert.from_dict(json.loads(ROOT_CERT_JSON))
+        except Exception as err:
+            print(f"  {DIM}ℹ Could not parse FIPSIGN_ROOT_CERT_JSON: {err}{RESET}")
+    else:
+        print(f"  {DIM}ℹ FIPSIGN_ROOT_CERT_JSON not set — verify_cert() offline test will be skipped.{RESET}")
+        print(f"  {DIM}  Download your root cert from the dashboard and pass it as:{RESET}")
+        print(f"  {DIM}  FIPSIGN_ROOT_CERT_JSON='$(cat root-cert.json)' python tests/test_sdk.py{RESET}")
+
+    # 13.1 ca.issue()
+    issued_cert = None
+    issued_cert_id = None
+    try:
+        import time as _time
+        r = pq.ca.issue(
+            subject=f"device-test-{int(_time.time() * 1000)}",
+            public_key="dGVzdC1wdWJsaWMta2V5LWZvcm10ZXN0aW5n",
+            expires_in_seconds=86400,
+            meta={"env": "test", "sdk": "fipsign-sdk-python"},
+        )
+        if not r.certificate:                       raise AssertionError("missing certificate")
+        if r.certificate.type != "CA_CERT":         raise AssertionError(f"expected CA_CERT, got {r.certificate.type}")
+        if not r.certificate.id:                    raise AssertionError("missing certificate.id")
+        if not r.certificate.signature:             raise AssertionError("missing certificate.signature")
+        if not r.certificate.caId:                  raise AssertionError("missing certificate.caId")
+        if not r.certificate.expiresAt:             raise AssertionError("missing certificate.expiresAt")
+        if not r.meta.certId:                       raise AssertionError("missing meta.certId")
+        if not isinstance(r.usage.freeRemaining, int): raise AssertionError("missing usage.freeRemaining")
+        log("certId",    r.meta.certId)
+        log("caId",      r.certificate.caId)
+        log("subject",   r.certificate.subject)
+        log("expiresAt", str(r.certificate.expiresAt))
+        log("algorithm", r.certificate.algorithm)
+        issued_cert    = r.certificate
+        issued_cert_id = r.meta.certId
+        pass_test("ca.issue() — certificate issued with correct shape")
+    except Exception as err:
+        fail_test("ca.issue()", err)
+
+    # 13.2 ca.verify_cert() offline — optional
+    if root_cert:
+        try:
+            if not issued_cert: raise AssertionError("skipped — ca.issue() failed")
+            result = pq.ca.verify_cert(issued_cert, root_cert)
+            if not result.valid: raise AssertionError(f"verify_cert returned invalid: {result.error}")
+            log("valid",   str(result.valid))
+            log("subject", result.cert.subject if result.cert else "—")
+            pass_test("ca.verify_cert() offline — certificate signature valid against root cert")
+        except Exception as err:
+            fail_test("ca.verify_cert() offline", err)
+
+        try:
+            if not issued_cert: raise AssertionError("skipped — ca.issue() failed")
+            import dataclasses
+            tampered = dataclasses.replace(issued_cert, subject="tampered-subject")
+            result   = pq.ca.verify_cert(tampered, root_cert)
+            if result.valid: raise AssertionError("should have been invalid — cert was tampered")
+            log("valid", str(result.valid))
+            log("error", result.error)
+            pass_test("ca.verify_cert() — tampered certificate correctly rejected")
+        except Exception as err:
+            fail_test("ca.verify_cert() tampered cert", err)
+
+        try:
+            if not issued_cert: raise AssertionError("skipped — ca.issue() failed")
+            import dataclasses
+            wrong_root = dataclasses.replace(root_cert, id="ca_wrong_id_000")
+            result     = pq.ca.verify_cert(issued_cert, wrong_root)
+            if result.valid: raise AssertionError("should have been invalid — wrong CA")
+            log("valid", str(result.valid))
+            log("error", result.error)
+            pass_test("ca.verify_cert() — wrong CA root correctly rejected")
+        except Exception as err:
+            fail_test("ca.verify_cert() wrong CA", err)
+    else:
+        print(f"  {DIM}  → ca.verify_cert() offline tests skipped (no FIPSIGN_ROOT_CERT_JSON){RESET}")
+
+    # 13.3 ca.get_crl() — before revocation
+    crl_before = None
+    try:
+        r = pq.ca.get_crl()
+        if not r.caId:                      raise AssertionError("missing caId")
+        if not r.subject:                   raise AssertionError("missing subject")
+        if not isinstance(r.crl, list):     raise AssertionError("crl is not a list")
+        if not isinstance(r.generatedAt, int): raise AssertionError("missing generatedAt")
+        log("caId",        r.caId)
+        log("subject",     r.subject)
+        log("crl entries", str(len(r.crl)))
+        crl_before = r.crl
+        pass_test("ca.get_crl() — CRL returned with correct shape")
+    except Exception as err:
+        fail_test("ca.get_crl()", err)
+
+    # 13.4 ca.is_cert_revoked() — before revocation
+    try:
+        if issued_cert is None or crl_before is None:
+            raise AssertionError("skipped — previous steps failed")
+        revoked = pq.ca.is_cert_revoked(issued_cert, crl_before)
+        if revoked: raise AssertionError("cert should NOT be revoked yet")
+        log("revoked", str(revoked))
+        pass_test("ca.is_cert_revoked() — cert correctly not in CRL before revocation")
+    except Exception as err:
+        fail_test("ca.is_cert_revoked() before revocation", err)
+
+    # 13.5 ca.get_cert()
+    try:
+        if not issued_cert_id: raise AssertionError("skipped — ca.issue() failed")
+        r = pq.ca.get_cert(issued_cert_id)
+        if not r.certificate:            raise AssertionError("missing certificate")
+        if not r.status:                 raise AssertionError("missing status")
+        if r.status.revoked:             raise AssertionError("cert should not be revoked yet")
+        if r.status.expired:             raise AssertionError("cert should not be expired")
+        if r.status.revokedAt is not None: raise AssertionError("revokedAt should be None")
+        log("certId",  r.certificate.id)
+        log("revoked", str(r.status.revoked))
+        log("expired", str(r.status.expired))
+        pass_test("ca.get_cert() — certificate retrieved with correct status")
+    except Exception as err:
+        fail_test("ca.get_cert()", err)
+
+    # 13.6 ca.revoke_cert()
+    try:
+        if not issued_cert_id: raise AssertionError("skipped — ca.issue() failed")
+        r = pq.ca.revoke_cert(issued_cert_id, "python sdk integration test")
+        if not r.certId:                      raise AssertionError("missing certId")
+        if not r.revokedAt:                   raise AssertionError("missing revokedAt")
+        if r.reason != "python sdk integration test": raise AssertionError(f"wrong reason: {r.reason}")
+        if not isinstance(r.usage.freeRemaining, int): raise AssertionError("missing usage")
+        log("certId",    r.certId)
+        log("revokedAt", str(r.revokedAt))
+        log("reason",    r.reason)
+        pass_test("ca.revoke_cert() — certificate revoked successfully")
+    except Exception as err:
+        fail_test("ca.revoke_cert()", err)
+
+    # 13.7 ca.revoke_cert() — already revoked should return 409
+    try:
+        if not issued_cert_id: raise AssertionError("skipped — ca.issue() failed")
+        pq.ca.revoke_cert(issued_cert_id, "duplicate revocation")
+        fail_test("ca.revoke_cert() duplicate — should have raised", "did not raise")
+    except PQAuthError as err:
+        if err.status == 409:
+            pass_test("ca.revoke_cert() duplicate — correctly returns 409")
+        else:
+            fail_test("ca.revoke_cert() duplicate", err)
+    except Exception as err:
+        fail_test("ca.revoke_cert() duplicate", err)
+
+    # 13.8 ca.get_crl() — after revocation
+    crl_after = None
+    try:
+        r = pq.ca.get_crl()
+        crl_after = r.crl
+        log("crl entries after revocation", str(len(r.crl)))
+        pass_test("ca.get_crl() after revocation — CRL fetched")
+    except Exception as err:
+        fail_test("ca.get_crl() after revocation", err)
+
+    # 13.9 ca.is_cert_revoked() — after revocation
+    try:
+        if issued_cert is None or crl_after is None:
+            raise AssertionError("skipped — previous steps failed")
+        revoked = pq.ca.is_cert_revoked(issued_cert, crl_after)
+        if not revoked: raise AssertionError("cert SHOULD be revoked now")
+        log("revoked", str(revoked))
+        pass_test("ca.is_cert_revoked() — cert correctly found in CRL after revocation")
+    except Exception as err:
+        fail_test("ca.is_cert_revoked() after revocation", err)
+
+    # 13.10 ca.get_cert() — status after revocation
+    try:
+        if not issued_cert_id: raise AssertionError("skipped — ca.issue() failed")
+        r = pq.ca.get_cert(issued_cert_id)
+        if not r.status.revoked:    raise AssertionError("cert should be revoked now")
+        if not r.status.revokedAt:  raise AssertionError("revokedAt should be set")
+        log("revoked",   str(r.status.revoked))
+        log("revokedAt", str(r.status.revokedAt))
+        pass_test("ca.get_cert() after revocation — status.revoked is True")
+    except Exception as err:
+        fail_test("ca.get_cert() after revocation", err)
+
     # ─── Summary ─────────────────────────────────────────────────────────────
     total = passed + failed
     print("\n" + "─" * 48)

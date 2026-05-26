@@ -176,3 +176,121 @@ class HealthResult:
     algorithm: str
     quantumResistant: bool
     version: str
+
+# ─── Certificate Authority ─────────────────────────────────────────────────────
+
+@dataclass
+class PQCert:
+    """A post-quantum certificate issued by a FIPSign CA."""
+    type:      str
+    id:        str
+    subject:   str
+    publicKey: str
+    issuedAt:  int
+    algorithm: str
+    standard:  str
+    signature: str
+    caId:      Optional[str]               = None
+    expiresAt: Optional[int]               = None
+    meta:      Optional[Dict[str, Any]]    = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "type":      self.type,
+            "id":        self.id,
+            "subject":   self.subject,
+            "publicKey": self.publicKey,
+            "issuedAt":  self.issuedAt,
+            "algorithm": self.algorithm,
+            "standard":  self.standard,
+            "signature": self.signature,
+        }
+        if self.caId      is not None: d["caId"]      = self.caId
+        if self.expiresAt is not None: d["expiresAt"] = self.expiresAt
+        if self.meta      is not None: d["meta"]      = self.meta
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PQCert":
+        return cls(
+            type      = data["type"],
+            id        = data["id"],
+            subject   = data["subject"],
+            publicKey = data["publicKey"],
+            issuedAt  = data["issuedAt"],
+            algorithm = data["algorithm"],
+            standard  = data["standard"],
+            signature = data["signature"],
+            caId      = data.get("caId"),
+            expiresAt = data.get("expiresAt"),
+            meta      = data.get("meta"),
+        )
+
+
+@dataclass
+class CaIssueMeta:
+    certId:    str
+    caId:      str
+    subject:   str
+    issuedAt:  int
+    expiresAt: int
+    algorithm: str
+    standard:  str
+
+
+@dataclass
+class CaIssueUsage:
+    freeRemaining:  int
+    packRemaining:  int
+    totalRemaining: int
+
+
+@dataclass
+class CaIssueResult:
+    certificate: PQCert
+    meta:        CaIssueMeta
+    usage:       CaIssueUsage
+
+
+@dataclass
+class CaRevokeCertResult:
+    certId:    str
+    revokedAt: int
+    reason:    Optional[str]
+    usage:     CaIssueUsage
+
+
+@dataclass
+class CaCertStatus:
+    revoked:   bool
+    expired:   bool
+    revokedAt: Optional[int]
+    expiresAt: int
+
+
+@dataclass
+class CaGetCertResult:
+    certificate: PQCert
+    status:      CaCertStatus
+
+
+@dataclass
+class CrlEntry:
+    certId:    str
+    revokedAt: int
+    reason:    Optional[str]
+
+
+@dataclass
+class CaGetCrlResult:
+    caId:        str
+    subject:     str
+    crl:         List[CrlEntry]
+    generatedAt: int
+
+
+@dataclass
+class VerifyCertResult:
+    valid: bool
+    cert:  Optional[PQCert] = None
+    error: Optional[str]    = None

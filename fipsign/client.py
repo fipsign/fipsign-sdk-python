@@ -31,6 +31,7 @@ from .types import (
     WebhookResult,
 )
 from .webhooks import Webhooks
+from .ca import CA
 
 DEFAULT_BASE_URL = "https://api.fipsign.dev"
 DEFAULT_TIMEOUT = 10  # seconds
@@ -98,6 +99,7 @@ class PQAuth:
             }
         )
         self.webhooks = Webhooks(self)
+        self.ca = CA(self)
 
     # ── Private: HTTP wrapper ─────────────────────────────────────────────────
 
