@@ -3,6 +3,7 @@ README.md
 pyproject.toml
 fipsign/__init__.py
 fipsign/async_client.py
+fipsign/ca.py
 fipsign/client.py
 fipsign/errors.py
 fipsign/middleware.py

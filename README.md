@@ -279,6 +279,155 @@ async def webhook(request: Request):
 
 ---
 
+## ca — Certificate Authority
+
+Issue and verify post-quantum certificates for devices, services, or any entity that needs a tamper-proof identity. Built on ML-DSA-65 — the same algorithm used for token signing.
+
+**Typical use case:** A manufacturer of smart locks, IoT sensors, or logistics devices creates a CA root once per project from the dashboard. For each device manufactured, the system calls `ca.issue()` with the device's public key. The device stores its certificate. Verification happens entirely offline — no API call needed at runtime.
+
+**Setup:** Create a project in the dashboard, then click "Create CA" inside that project. Download the root certificate — you will need it for offline verification.
+
+**One CA per project.** Each project can have one root CA. The CA is created from the dashboard — not via API. When you call `ca.issue()` or other CA methods, the SDK automatically uses the CA associated with the project that owns the API key.
+
+---
+
+### ca.issue() — Issue a certificate
+
+Issue a certificate signed by your project's CA. Cost: 1 token.
+
+```python
+result = pq.ca.issue(
+    subject="device-serial-00123",       # any identifier
+    public_key=device_public_key_b64,    # base64 ML-DSA-65 public key
+    expires_in_seconds=365 * 24 * 60 * 60,  # required — max 5 years
+    meta={"model": "lock-v2", "batch": "2026-05"},  # optional
+)
+
+print(result.certificate.id)        # cert_...
+print(result.certificate.caId)      # ca_... — the CA that signed it
+print(result.certificate.expiresAt) # Unix timestamp
+print(result.meta.certId)           # same as certificate.id
+```
+
+---
+
+### ca.verify_cert() — Verify a certificate offline
+
+Verify a certificate entirely in memory using the CA root certificate. No API call. Does not check revocation.
+
+```python
+import json
+
+with open("root-cert.json") as f:
+    from fipsign.types import PQCert
+    root_cert = PQCert.from_dict(json.load(f))
+
+result = pq.ca.verify_cert(device_cert, root_cert)
+
+if not result.valid:
+    raise PermissionError(result.error)  # 'Invalid certificate signature', 'CERT_EXPIRED', etc.
+
+print(result.cert.subject)    # 'device-serial-00123'
+print(result.cert.expiresAt)  # Unix timestamp
+```
+
+---
+
+### ca.is_cert_revoked() — Check revocation offline
+
+Check if a certificate appears in a CRL. Offline — pass the result of `ca.get_crl()`.
+
+```python
+crl_result = pq.ca.get_crl()
+
+if pq.ca.is_cert_revoked(device_cert, crl_result.crl):
+    raise PermissionError("Device certificate has been revoked")
+```
+
+---
+
+### ca.get_crl() — Get the Certificate Revocation List
+
+Fetch the current CRL for your project's CA. Free — no token cost.
+
+```python
+result = pq.ca.get_crl()
+
+print(f"CA: {result.subject}")
+print(f"{len(result.crl)} revoked certificates")
+
+for entry in result.crl:
+    from datetime import datetime
+    print(f"{entry.certId} — {datetime.fromtimestamp(entry.revokedAt).isoformat()} — {entry.reason}")
+```
+
+---
+
+### ca.get_cert() — Get a certificate by ID
+
+Retrieve a certificate and its current status. Free — no token cost.
+
+```python
+result = pq.ca.get_cert("cert_...")
+
+print(result.status.revoked)    # bool
+print(result.status.expired)    # bool
+print(result.status.revokedAt)  # Unix timestamp or None
+print(result.status.expiresAt)  # Unix timestamp
+```
+
+---
+
+### ca.revoke_cert() — Revoke a certificate
+
+Revoke a certificate immediately. Cost: 1 token.
+
+```python
+pq.ca.revoke_cert("cert_...", "device decommissioned")
+pq.ca.revoke_cert("cert_...", "device reported stolen")
+```
+
+---
+
+### Full device lifecycle example
+
+```python
+import json
+from fipsign import PQAuth
+from fipsign.types import PQCert
+
+pq = PQAuth("pqa_your_api_key")
+
+# Load the root certificate downloaded from the dashboard
+with open("root-cert.json") as f:
+    root_cert = PQCert.from_dict(json.load(f))
+
+# 1. Factory: issue a certificate for the device
+result = pq.ca.issue(
+    subject="lock-serial-00123",
+    public_key=device_public_key_b64,    # generated on the device
+    expires_in_seconds=365 * 24 * 60 * 60,
+    meta={"model": "lock-v3", "batch": "2026-05"},
+)
+certificate = result.certificate
+# store certificate on the device
+
+# 2. At runtime: verify the device certificate offline
+verify_result = pq.ca.verify_cert(certificate, root_cert)
+if not verify_result.valid:
+    raise PermissionError(verify_result.error)
+
+# 3. At runtime: check the device is not revoked
+crl_result = pq.ca.get_crl()
+if pq.ca.is_cert_revoked(certificate, crl_result.crl):
+    raise PermissionError("Device revoked")
+
+# 4. Decommission: revoke the certificate
+pq.ca.revoke_cert(certificate.id, "device decommissioned")
+```
+
+---
+
 ## Error handling
 
 `verify()` never raises — it returns `VerifyResult(valid=False, error="...")` on any failure.
@@ -301,6 +450,16 @@ except PQAuthError as err:
             ...
         case "MISSING_SUB":        # sign() called without sub
             ...
+        case "INVALID_CERT_TYPE":      # ca.verify_cert(): expected CA_ROOT or CA_CERT
+            ...
+        case "CA_MISMATCH":            # ca.verify_cert(): cert was not issued by this CA
+            ...
+        case "CERT_EXPIRED":           # ca.verify_cert(): certificate has expired
+            ...
+        case "INVALID_CERT_SIGNATURE": # ca.verify_cert(): signature invalid
+            ...
+        case "MISSING_DEPENDENCY":     # ca.verify_cert(): dilithium-py not installed
+            ...
     print(err.code, err.message, err.status)
 ```
 
@@ -310,13 +469,15 @@ except PQAuthError as err:
 
 Every account gets **10,000 free tokens per month**, reset on the 1st (UTC). Unused free tokens do not carry over. Additional tokens are available as non-expiring packs, purchased from the dashboard.
 
-Each of these operations costs **1 token**: signing, verification, and revocation. Checking usage and fetching the public key are free.
+Each of these operations costs **1 token**: signing, verification, revocation, certificate issuance (`ca.issue()`), and certificate revocation (`ca.revoke_cert()`). Checking usage, fetching the public key, and all CA read operations (`ca.get_crl()`, `ca.get_cert()`) are free.
 
 ---
 
 ## Rate limits
 
 300 requests per minute per API key on `/sign`, `/verify`, and `/revoke`. On excess the API returns HTTP 429.
+
+CA operations (`ca.issue()`, `ca.revoke_cert()`) are rate limited at 300 requests per minute per API key. Read operations (`ca.get_crl()`, `ca.get_cert()`) are not rate limited.
 
 Token quota and rate limits are separate controls:
 - `"Rate limit exceeded"` → back off and retry with exponential backoff
