@@ -7,14 +7,13 @@ name = "fipsign-sdk"
 version = "0.7.0"
 description = "Post-quantum signing SDK for Python — ML-DSA-65 (NIST FIPS 204)"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 requires-python = ">=3.9"
 authors = [{ name = "FIPSign", email = "sdk@fipsign.dev" }]
 keywords = ["post-quantum", "cryptography", "signing", "ml-dsa", "fips", "pqc", "auth"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
