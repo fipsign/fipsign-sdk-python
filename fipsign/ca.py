@@ -4,6 +4,21 @@ Accessed via pq.ca.issue(...), pq.ca.get_crl(), etc.
 
 The CA root is created once per project from the dashboard.
 Use ca.issue() to certify devices, services, or any entity at scale.
+
+Note on offline verification and key generation
+------------------------------------------------
+The Python SDK does not include ca.verify_cert() or generate_key_pair().
+This is intentional: there is no production-ready Python library for
+ML-DSA-65 (NIST FIPS 204) at this time. The JavaScript SDK uses
+@noble/post-quantum, which is audited and production-ready.
+
+For offline certificate verification and device key pair generation,
+use the JavaScript fipsign-sdk:
+    npm install fipsign-sdk
+
+All server-side operations (issue, revoke, get_cert, get_crl) work
+normally from Python — only the local cryptographic operations are
+unavailable until a reliable Python ML-DSA-65 library matures.
 """
 
 from __future__ import annotations
@@ -48,11 +63,12 @@ class CA:
     if pq.ca.is_cert_revoked(device_cert, crl_result.crl):
         raise PermissionError("Device certificate has been revoked")
 
-    Note
-    ----
-    verify_cert() and generate_key_pair() are not yet available in the Python SDK.
-    Use the JavaScript SDK for offline certificate verification and key generation.
-    See https://fipsign.dev/guide for details.
+    Note on offline operations
+    --------------------------
+    verify_cert() and generate_key_pair() are not available in the Python SDK.
+    No production-ready Python library for ML-DSA-65 (NIST FIPS 204) exists yet.
+    Use the JavaScript fipsign-sdk for offline certificate verification and
+    device key pair generation. See https://fipsign.dev/guide for details.
     """
 
     def __init__(self, client: "PQAuth") -> None:
@@ -77,8 +93,10 @@ class CA:
             Max 256 characters.
         public_key : str
             Base64-encoded ML-DSA-65 public key of the entity to certify.
+            Generate this on the device using the JS SDK's generateKeyPair().
         expires_in_seconds : int
-            Certificate lifetime in seconds. Required. Max 5 years (157_680_000).
+            Certificate lifetime in seconds. Required.
+            Minimum: 60 (1 minute). Maximum: 157_680_000 (5 years).
         meta : dict, optional
             Up to 10 key-value pairs stored in the certificate.
 
@@ -91,10 +109,12 @@ class CA:
 
         Raises
         ------
+        PQAuthError(code="API_ERROR", status=400)
+            If expires_in_seconds is below 60 or above 157_680_000.
         PQAuthError(code="API_ERROR", status=404)
-            If no active CA exists for this project.
+            If no active CA exists for this project. Create one from the dashboard.
         PQAuthError(code="API_ERROR", status=429)
-            If the active certificate limit is reached or token quota is exhausted.
+            If token quota is exhausted.
 
         Examples
         --------
@@ -186,6 +206,10 @@ class CA:
 
         Free — no token cost.
 
+        Use this when you need the real-time revocation status of a specific
+        certificate — for example, before authorizing a high-value operation.
+        For bulk offline checks, use get_crl() + is_cert_revoked() instead.
+
         Parameters
         ----------
         cert_id : str
@@ -196,6 +220,11 @@ class CA:
         CaGetCertResult
             .certificate — the PQCert
             .status      — revoked, expired, revokedAt, expiresAt
+
+        Raises
+        ------
+        PQAuthError(code="API_ERROR", status=404)
+            If the certificate does not exist or belongs to a different project.
 
         Examples
         --------
@@ -220,15 +249,25 @@ class CA:
 
         Free — no token cost.
 
+        Use get_crl() when you need to verify revocation offline or in bulk —
+        download the list once and check multiple certificates against it locally
+        using is_cert_revoked(). For a single real-time check, use get_cert().
+
         Returns
         -------
         CaGetCrlResult
             .caId, .subject, .crl (list of CrlEntry), .generatedAt
 
+        Notes
+        -----
+        CrlEntry.reason may be None if no reason was provided at revocation time.
+
         Examples
         --------
         >>> result = pq.ca.get_crl()
         >>> print(f"{len(result.crl)} revoked certificates")
+        >>> for entry in result.crl:
+        ...     print(f"{entry.certId} — {entry.reason or 'no reason'}")
         """
         data = self._client._request("GET", "/ca/crl")
         return CaGetCrlResult(

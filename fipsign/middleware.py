@@ -163,7 +163,6 @@ def fastapi_middleware(pq: PQAuth) -> Callable:
 
         return result.payload
 
-    # Return a proper FastAPI dependency that uses the security scheme
     def dependency(
         credentials: Optional[Any] = __import__("fastapi", fromlist=["Depends"]).Depends(security),
     ) -> dict:
@@ -229,6 +228,6 @@ def verify_webhook_signature(
         secret.encode("utf-8"),
         payload_bytes,
         hashlib.sha256,
-    ).hexdigest()  # type: ignore[attr-defined]
+    ).hexdigest()
 
     return hmac.compare_digest(signature_header, expected)

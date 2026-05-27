@@ -7,13 +7,14 @@ Usage:
     FIPSIGN_API_KEY=pqa_...              \\
     WEBHOOK_URL=https://webhook.site/... \\
     WEBHOOK_SITE_TOKEN=your-uuid         \\
-    python test_sdk.py
+    python tests/test_sdk.py
 
 Prerequisites:
     1. Create a free account at https://app.fipsign.dev
     2. Create a project and an API key inside that project
-    3. Create a free endpoint at https://webhook.site and copy your UUID
-    4. pip install fipsign-sdk requests
+    3. Create a CA for that project from the dashboard
+    4. Create a free endpoint at https://webhook.site and copy your UUID
+    5. pip install fipsign-sdk requests
 """
 
 import json
@@ -48,6 +49,54 @@ if not WEBHOOK_URL or not WEBHOOK_SITE_TOKEN:
     print("  WEBHOOK_URL=https://webhook.site/<your-uuid>")
     print("  WEBHOOK_SITE_TOKEN=<your-uuid>")
     sys.exit(1)
+
+# ─── Valid ML-DSA-65 public key for CA tests ──────────────────────────────────
+# Generated with @noble/post-quantum ml_dsa65.keygen() using a fixed seed.
+# This is a real 1952-byte ML-DSA-65 public key — not a placeholder.
+
+TEST_DEVICE_PUBLIC_KEY = (
+    "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"
+)
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -85,7 +134,8 @@ def section(title: str) -> None:
 
 def run() -> None:
     print(f"\n{BOLD}FIPSign SDK — Integration Test (Python){RESET}")
-    print(f"{DIM}fipsign-sdk@0.5.2 · {datetime.utcnow().isoformat()}Z{RESET}\n")
+    from datetime import timezone
+    print(f"{DIM}fipsign-sdk · {datetime.now(timezone.utc).isoformat()}Z{RESET}\n")
 
     pq = PQAuth(API_KEY)
 
@@ -448,7 +498,6 @@ def run() -> None:
             raise AssertionError("signatures are identical — possible replay attack vulnerability")
         if r1.token.payload == r2.token.payload:
             raise AssertionError("payloads are identical — iat should differ between calls")
-
         log("signature1", r1.token.signature[:24] + "...")
         log("signature2", r2.token.signature[:24] + "...")
         log("distinct",   "yes ✓")
@@ -508,17 +557,16 @@ def run() -> None:
     except Exception as err:
         fail_test("webhook delivery confirmation", err)
 
-# ─── 13 Certificate Authority ─────────────────────────────────────────────
+    # ─── 13 Certificate Authority ─────────────────────────────────────────────
     section("13 · Certificate Authority")
 
-    # 13.1 ca.issue()
-    issued_cert = None
+    # 13.1 ca.issue() — happy path
+    issued_cert    = None
     issued_cert_id = None
     try:
-        import time as _time
         r = pq.ca.issue(
-            subject=f"device-test-{int(_time.time() * 1000)}",
-            public_key="dGVzdC1wdWJsaWMta2V5LWZvcm10ZXN0aW5n",
+            subject=f"device-test-{int(time.time() * 1000)}",
+            public_key=TEST_DEVICE_PUBLIC_KEY,
             expires_in_seconds=86400,
             meta={"env": "test", "sdk": "fipsign-sdk-python"},
         )
@@ -541,7 +589,41 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.issue()", err)
 
-    # 13.3 ca.get_crl() — before revocation
+    # 13.2 ca.issue() — expires_in_seconds below minimum (< 60)
+    try:
+        pq.ca.issue(
+            subject="device-expire-min-test",
+            public_key=TEST_DEVICE_PUBLIC_KEY,
+            expires_in_seconds=30,
+        )
+        fail_test("ca.issue() rejects expires_in_seconds < 60", "should have raised")
+    except PQAuthError as err:
+        if err.code == "API_ERROR" and err.status == 400:
+            log("expires_in_seconds", "30 → rejected")
+            pass_test("ca.issue() — raises API_ERROR(400) when expires_in_seconds < 60")
+        else:
+            fail_test("ca.issue() rejects expires_in_seconds < 60", err)
+    except Exception as err:
+        fail_test("ca.issue() rejects expires_in_seconds < 60", err)
+
+    # 13.3 ca.issue() — expires_in_seconds above maximum (> 5 years)
+    try:
+        pq.ca.issue(
+            subject="device-expire-max-test",
+            public_key=TEST_DEVICE_PUBLIC_KEY,
+            expires_in_seconds=200_000_000,
+        )
+        fail_test("ca.issue() rejects expires_in_seconds > 5 years", "should have raised")
+    except PQAuthError as err:
+        if err.code == "API_ERROR" and err.status == 400:
+            log("expires_in_seconds", "200_000_000 → rejected")
+            pass_test("ca.issue() — raises API_ERROR(400) when expires_in_seconds > 5 years")
+        else:
+            fail_test("ca.issue() rejects expires_in_seconds > 5 years", err)
+    except Exception as err:
+        fail_test("ca.issue() rejects expires_in_seconds > 5 years", err)
+
+    # 13.4 ca.get_crl() — before revocation
     crl_before = None
     try:
         r = pq.ca.get_crl()
@@ -557,7 +639,7 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.get_crl()", err)
 
-    # 13.4 ca.is_cert_revoked() — before revocation
+    # 13.5 ca.is_cert_revoked() — before revocation
     try:
         if issued_cert is None or crl_before is None:
             raise AssertionError("skipped — previous steps failed")
@@ -568,7 +650,7 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.is_cert_revoked() before revocation", err)
 
-    # 13.5 ca.get_cert()
+    # 13.6 ca.get_cert() — existing cert
     try:
         if not issued_cert_id: raise AssertionError("skipped — ca.issue() failed")
         r = pq.ca.get_cert(issued_cert_id)
@@ -584,7 +666,20 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.get_cert()", err)
 
-    # 13.6 ca.revoke_cert()
+    # 13.7 ca.get_cert() — non-existent certId returns 404
+    try:
+        pq.ca.get_cert("cert_nonexistent_000000000000000000000000")
+        fail_test("ca.get_cert() non-existent certId — should have raised", "did not raise")
+    except PQAuthError as err:
+        if err.code == "API_ERROR" and err.status == 404:
+            log("certId", "cert_nonexistent_... → 404")
+            pass_test("ca.get_cert() — raises API_ERROR(404) for non-existent certId")
+        else:
+            fail_test("ca.get_cert() non-existent certId", err)
+    except Exception as err:
+        fail_test("ca.get_cert() non-existent certId", err)
+
+    # 13.8 ca.revoke_cert()
     try:
         if not issued_cert_id: raise AssertionError("skipped — ca.issue() failed")
         r = pq.ca.revoke_cert(issued_cert_id, "python sdk integration test")
@@ -599,7 +694,7 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.revoke_cert()", err)
 
-    # 13.7 ca.revoke_cert() — already revoked should return 409
+    # 13.9 ca.revoke_cert() — already revoked should return 409
     try:
         if not issued_cert_id: raise AssertionError("skipped — ca.issue() failed")
         pq.ca.revoke_cert(issued_cert_id, "duplicate revocation")
@@ -612,17 +707,24 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.revoke_cert() duplicate", err)
 
-    # 13.8 ca.get_crl() — after revocation
+    # 13.10 ca.get_crl() — after revocation, verify reason field
     crl_after = None
     try:
         r = pq.ca.get_crl()
         crl_after = r.crl
+        # Verify reason field — may be None if no reason was given
+        entry = next((e for e in r.crl if e.certId == issued_cert_id), None)
+        if entry:
+            reason_is_valid = entry.reason is None or isinstance(entry.reason, str)
+            if not reason_is_valid:
+                raise AssertionError(f"reason must be str or None, got: {type(entry.reason)}")
+            log("reason type", "None" if entry.reason is None else f'"{entry.reason}"')
         log("crl entries after revocation", str(len(r.crl)))
-        pass_test("ca.get_crl() after revocation — CRL fetched")
+        pass_test("ca.get_crl() after revocation — CRL fetched, reason field is str or None")
     except Exception as err:
         fail_test("ca.get_crl() after revocation", err)
 
-    # 13.9 ca.is_cert_revoked() — after revocation
+    # 13.11 ca.is_cert_revoked() — after revocation
     try:
         if issued_cert is None or crl_after is None:
             raise AssertionError("skipped — previous steps failed")
@@ -633,7 +735,7 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.is_cert_revoked() after revocation", err)
 
-    # 13.10 ca.get_cert() — status after revocation
+    # 13.12 ca.get_cert() — status after revocation
     try:
         if not issued_cert_id: raise AssertionError("skipped — ca.issue() failed")
         r = pq.ca.get_cert(issued_cert_id)

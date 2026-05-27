@@ -283,11 +283,39 @@ async def webhook(request: Request):
 
 Issue and verify post-quantum certificates for devices, services, or any entity that needs a tamper-proof identity. Built on ML-DSA-65 — the same algorithm used for token signing.
 
-**Typical use case:** A manufacturer of smart locks, IoT sensors, or logistics devices creates a CA root once per project from the dashboard. For each device manufactured, the system calls `ca.issue()` with the device's public key. The device stores its certificate. Verification happens entirely offline — no API call needed at runtime.
+**Typical use case:** A manufacturer of smart locks, IoT sensors, or logistics devices creates a CA root once per project from the dashboard. For each device manufactured, the system calls `ca.issue()` with the device's public key. The device stores its certificate. Revocation checks happen via `ca.get_crl()` and `ca.is_cert_revoked()`.
 
-**Setup:** Create a project in the dashboard, then click "Create CA" inside that project.
+**Setup:** Create a project in the dashboard, then click "Create CA" inside that project. A root certificate will be shown immediately after creation.
+
+> **Save the root certificate now.** It is shown only once and cannot be retrieved again. Store it in a secrets manager or secure file — treat it like a private key. You will need it for offline certificate verification via the JavaScript SDK.
 
 **One CA per project.** Each project can have one root CA. The CA is created from the dashboard — not via API. When you call `ca.issue()` or other CA methods, the SDK automatically uses the CA associated with the project that owns the API key.
+
+---
+
+### Device key pair generation
+
+The Python SDK does not include a `generate_key_pair()` function. This is intentional: there is no production-ready Python library for ML-DSA-65 (NIST FIPS 204) at this time.
+
+To generate an ML-DSA-65 key pair for a device, use the JavaScript SDK at provisioning time:
+
+```javascript
+import { generateKeyPair } from 'fipsign-sdk'
+
+const { publicKey, secretKey } = await generateKeyPair()
+// store secretKey securely on the device — never send it to the server
+// pass publicKey to ca.issue() to obtain a certificate
+```
+
+Then call `ca.issue()` from Python with the `publicKey`:
+
+```python
+result = pq.ca.issue(
+    subject="device-serial-00123",
+    public_key=public_key_from_js,   # base64 ML-DSA-65 public key
+    expires_in_seconds=365 * 24 * 60 * 60,
+)
+```
 
 ---
 
@@ -295,12 +323,14 @@ Issue and verify post-quantum certificates for devices, services, or any entity 
 
 Issue a certificate signed by your project's CA. Cost: 1 token.
 
+`expires_in_seconds` is required and must be between 60 seconds (minimum) and 157,680,000 seconds (5 years maximum).
+
 ```python
 result = pq.ca.issue(
     subject="device-serial-00123",       # any identifier
     public_key=device_public_key_b64,    # base64 ML-DSA-65 public key
-    expires_in_seconds=365 * 24 * 60 * 60,  # required — max 5 years
-    meta={"model": "lock-v2", "batch": "2026-05"},  # optional
+    expires_in_seconds=365 * 24 * 60 * 60,  # required — between 60s and 5 years
+    meta={"model": "lock-v2", "batch": "2026-05"},  # optional, max 10 keys
 )
 
 print(result.certificate.id)        # cert_...
@@ -311,11 +341,18 @@ print(result.meta.certId)           # same as certificate.id
 
 ---
 
-### ca.verify_cert() — Verify a certificate offline
+### ca.verify_cert() — Offline certificate verification
 
-> **Coming soon.** Offline certificate verification is not yet available in the Python SDK.
-> Use the JavaScript SDK (`pq.ca.verifyCert()`) for this operation.
-> See [fipsign.dev/guide](https://fipsign.dev/guide) for details.
+> **Not available in the Python SDK.** No production-ready Python library for ML-DSA-65 (NIST FIPS 204) exists at this time.
+>
+> Use the JavaScript SDK for offline verification:
+> ```javascript
+> import rootCert from './root-cert.json' assert { type: 'json' }
+> const result = fipsign.ca.verifyCert(deviceCert, rootCert)
+> if (!result.valid) return reject(result.error)
+> ```
+>
+> For real-time server-side status checks, use `ca.get_cert()` from Python instead.
 
 ---
 
@@ -336,6 +373,8 @@ if pq.ca.is_cert_revoked(device_cert, crl_result.crl):
 
 Fetch the current CRL for your project's CA. Free — no token cost.
 
+Use `get_crl()` when you need to verify revocation in bulk — download the list once and check multiple certificates against it locally using `is_cert_revoked()`. For checking the status of a single certificate in real time (e.g. before a high-value transaction), use `get_cert()` instead.
+
 ```python
 result = pq.ca.get_crl()
 
@@ -344,14 +383,15 @@ print(f"{len(result.crl)} revoked certificates")
 
 for entry in result.crl:
     from datetime import datetime
-    print(f"{entry.certId} — {datetime.fromtimestamp(entry.revokedAt).isoformat()} — {entry.reason}")
+    # entry.reason may be None if no reason was provided at revocation time
+    print(f"{entry.certId} — {datetime.fromtimestamp(entry.revokedAt).isoformat()} — {entry.reason or 'no reason'}")
 ```
 
 ---
 
 ### ca.get_cert() — Get a certificate by ID
 
-Retrieve a certificate and its current status. Free — no token cost.
+Retrieve a certificate and its current real-time status. Use this for single certificate checks before high-value operations. Free — no token cost.
 
 ```python
 result = pq.ca.get_cert("cert_...")
@@ -380,26 +420,31 @@ pq.ca.revoke_cert("cert_...", "device reported stolen")
 ```python
 import json
 from fipsign import PQAuth
-from fipsign.types import PQCert
 
 pq = PQAuth("pqa_your_api_key")
 
-# 1. Factory: issue a certificate for the device
+# 1. Factory: generate key pair using the JS SDK, store secretKey on device
+# 2. Factory: issue a certificate for the device
 result = pq.ca.issue(
     subject="lock-serial-00123",
-    public_key=device_public_key_b64,    # generated on the device
+    public_key=device_public_key_b64,    # generated by JS SDK on device
     expires_in_seconds=365 * 24 * 60 * 60,
     meta={"model": "lock-v3", "batch": "2026-05"},
 )
 certificate = result.certificate
 # store certificate on the device
 
-# 3. At runtime: check the device is not revoked
+# 3. At runtime: check the device is not revoked (server-side, real-time)
+status = pq.ca.get_cert(certificate.id)
+if status.status.revoked:
+    raise PermissionError("Device revoked")
+
+# 4. At runtime: bulk revocation check (offline, from cached CRL)
 crl_result = pq.ca.get_crl()
 if pq.ca.is_cert_revoked(certificate, crl_result.crl):
     raise PermissionError("Device revoked")
 
-# 4. Decommission: revoke the certificate
+# 5. Decommission: revoke the certificate
 pq.ca.revoke_cert(certificate.id, "device decommissioned")
 ```
 

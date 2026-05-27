@@ -11,4 +11,4 @@ from .errors import PQAuthError
 from .middleware import flask_middleware, fastapi_middleware
 
 __all__ = ["PQAuth", "PQAuthError", "flask_middleware", "fastapi_middleware"]
-__version__ = "0.6.1"
+__version__ = "0.7.0"
