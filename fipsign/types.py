@@ -288,9 +288,3 @@ class CaGetCrlResult:
     crl:         List[CrlEntry]
     generatedAt: int
 
-
-@dataclass
-class VerifyCertResult:
-    valid: bool
-    cert:  Optional[PQCert] = None
-    error: Optional[str]    = None

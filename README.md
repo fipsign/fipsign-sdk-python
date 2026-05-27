@@ -285,7 +285,7 @@ Issue and verify post-quantum certificates for devices, services, or any entity 
 
 **Typical use case:** A manufacturer of smart locks, IoT sensors, or logistics devices creates a CA root once per project from the dashboard. For each device manufactured, the system calls `ca.issue()` with the device's public key. The device stores its certificate. Verification happens entirely offline — no API call needed at runtime.
 
-**Setup:** Create a project in the dashboard, then click "Create CA" inside that project. Download the root certificate — you will need it for offline verification.
+**Setup:** Create a project in the dashboard, then click "Create CA" inside that project.
 
 **One CA per project.** Each project can have one root CA. The CA is created from the dashboard — not via API. When you call `ca.issue()` or other CA methods, the SDK automatically uses the CA associated with the project that owns the API key.
 
@@ -313,23 +313,9 @@ print(result.meta.certId)           # same as certificate.id
 
 ### ca.verify_cert() — Verify a certificate offline
 
-Verify a certificate entirely in memory using the CA root certificate. No API call. Does not check revocation.
-
-```python
-import json
-
-with open("root-cert.json") as f:
-    from fipsign.types import PQCert
-    root_cert = PQCert.from_dict(json.load(f))
-
-result = pq.ca.verify_cert(device_cert, root_cert)
-
-if not result.valid:
-    raise PermissionError(result.error)  # 'Invalid certificate signature', 'CERT_EXPIRED', etc.
-
-print(result.cert.subject)    # 'device-serial-00123'
-print(result.cert.expiresAt)  # Unix timestamp
-```
+> **Coming soon.** Offline certificate verification is not yet available in the Python SDK.
+> Use the JavaScript SDK (`pq.ca.verifyCert()`) for this operation.
+> See [fipsign.dev/guide](https://fipsign.dev/guide) for details.
 
 ---
 
@@ -398,10 +384,6 @@ from fipsign.types import PQCert
 
 pq = PQAuth("pqa_your_api_key")
 
-# Load the root certificate downloaded from the dashboard
-with open("root-cert.json") as f:
-    root_cert = PQCert.from_dict(json.load(f))
-
 # 1. Factory: issue a certificate for the device
 result = pq.ca.issue(
     subject="lock-serial-00123",
@@ -411,11 +393,6 @@ result = pq.ca.issue(
 )
 certificate = result.certificate
 # store certificate on the device
-
-# 2. At runtime: verify the device certificate offline
-verify_result = pq.ca.verify_cert(certificate, root_cert)
-if not verify_result.valid:
-    raise PermissionError(verify_result.error)
 
 # 3. At runtime: check the device is not revoked
 crl_result = pq.ca.get_crl()
@@ -449,16 +426,6 @@ except PQAuthError as err:
         case "NETWORK_ERROR":      # connection failed
             ...
         case "MISSING_SUB":        # sign() called without sub
-            ...
-        case "INVALID_CERT_TYPE":      # ca.verify_cert(): expected CA_ROOT or CA_CERT
-            ...
-        case "CA_MISMATCH":            # ca.verify_cert(): cert was not issued by this CA
-            ...
-        case "CERT_EXPIRED":           # ca.verify_cert(): certificate has expired
-            ...
-        case "INVALID_CERT_SIGNATURE": # ca.verify_cert(): signature invalid
-            ...
-        case "MISSING_DEPENDENCY":     # ca.verify_cert(): dilithium-py not installed
             ...
     print(err.code, err.message, err.status)
 ```

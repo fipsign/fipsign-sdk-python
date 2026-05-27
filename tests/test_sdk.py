@@ -511,19 +511,6 @@ def run() -> None:
 # ─── 13 Certificate Authority ─────────────────────────────────────────────
     section("13 · Certificate Authority")
 
-    ROOT_CERT_JSON = os.environ.get("FIPSIGN_ROOT_CERT_JSON")
-    root_cert = None
-    if ROOT_CERT_JSON:
-        try:
-            from fipsign.types import PQCert as _PQCert
-            root_cert = _PQCert.from_dict(json.loads(ROOT_CERT_JSON))
-        except Exception as err:
-            print(f"  {DIM}ℹ Could not parse FIPSIGN_ROOT_CERT_JSON: {err}{RESET}")
-    else:
-        print(f"  {DIM}ℹ FIPSIGN_ROOT_CERT_JSON not set — verify_cert() offline test will be skipped.{RESET}")
-        print(f"  {DIM}  Download your root cert from the dashboard and pass it as:{RESET}")
-        print(f"  {DIM}  FIPSIGN_ROOT_CERT_JSON='$(cat root-cert.json)' python tests/test_sdk.py{RESET}")
-
     # 13.1 ca.issue()
     issued_cert = None
     issued_cert_id = None
@@ -553,44 +540,6 @@ def run() -> None:
         pass_test("ca.issue() — certificate issued with correct shape")
     except Exception as err:
         fail_test("ca.issue()", err)
-
-    # 13.2 ca.verify_cert() offline — optional
-    if root_cert:
-        try:
-            if not issued_cert: raise AssertionError("skipped — ca.issue() failed")
-            result = pq.ca.verify_cert(issued_cert, root_cert)
-            if not result.valid: raise AssertionError(f"verify_cert returned invalid: {result.error}")
-            log("valid",   str(result.valid))
-            log("subject", result.cert.subject if result.cert else "—")
-            pass_test("ca.verify_cert() offline — certificate signature valid against root cert")
-        except Exception as err:
-            fail_test("ca.verify_cert() offline", err)
-
-        try:
-            if not issued_cert: raise AssertionError("skipped — ca.issue() failed")
-            import dataclasses
-            tampered = dataclasses.replace(issued_cert, subject="tampered-subject")
-            result   = pq.ca.verify_cert(tampered, root_cert)
-            if result.valid: raise AssertionError("should have been invalid — cert was tampered")
-            log("valid", str(result.valid))
-            log("error", result.error)
-            pass_test("ca.verify_cert() — tampered certificate correctly rejected")
-        except Exception as err:
-            fail_test("ca.verify_cert() tampered cert", err)
-
-        try:
-            if not issued_cert: raise AssertionError("skipped — ca.issue() failed")
-            import dataclasses
-            wrong_root = dataclasses.replace(root_cert, id="ca_wrong_id_000")
-            result     = pq.ca.verify_cert(issued_cert, wrong_root)
-            if result.valid: raise AssertionError("should have been invalid — wrong CA")
-            log("valid", str(result.valid))
-            log("error", result.error)
-            pass_test("ca.verify_cert() — wrong CA root correctly rejected")
-        except Exception as err:
-            fail_test("ca.verify_cert() wrong CA", err)
-    else:
-        print(f"  {DIM}  → ca.verify_cert() offline tests skipped (no FIPSIGN_ROOT_CERT_JSON){RESET}")
 
     # 13.3 ca.get_crl() — before revocation
     crl_before = None

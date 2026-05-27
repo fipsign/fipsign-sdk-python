@@ -1,6 +1,6 @@
 """
 CA sub-client — mirrors pq.ca.* from the JS SDK.
-Accessed via pq.ca.issue(...), pq.ca.verify_cert(...), etc.
+Accessed via pq.ca.issue(...), pq.ca.get_crl(), etc.
 
 The CA root is created once per project from the dashboard.
 Use ca.issue() to certify devices, services, or any entity at scale.
@@ -8,8 +8,6 @@ Use ca.issue() to certify devices, services, or any entity at scale.
 
 from __future__ import annotations
 
-import base64
-import json
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from .errors import PQAuthError
@@ -23,7 +21,6 @@ from .types import (
     CaCertStatus,
     CrlEntry,
     PQCert,
-    VerifyCertResult,
 )
 
 if TYPE_CHECKING:
@@ -46,15 +43,16 @@ class CA:
         meta={"model": "lock-v2", "batch": "2026-05"},
     )
 
-    # Verify a certificate offline
-    result = pq.ca.verify_cert(device_cert, root_cert)
-    if not result.valid:
-        raise PermissionError(result.error)
-
     # Check revocation
     crl_result = pq.ca.get_crl()
     if pq.ca.is_cert_revoked(device_cert, crl_result.crl):
         raise PermissionError("Device certificate has been revoked")
+
+    Note
+    ----
+    verify_cert() and generate_key_pair() are not yet available in the Python SDK.
+    Use the JavaScript SDK for offline certificate verification and key generation.
+    See https://fipsign.dev/guide for details.
     """
 
     def __init__(self, client: "PQAuth") -> None:
@@ -247,41 +245,6 @@ class CA:
             generatedAt = data["generatedAt"],
         )
 
-    def verify_cert(self, cert: PQCert, root_cert: PQCert) -> VerifyCertResult:
-        """
-        Verify a certificate offline using the CA root certificate.
-
-        No API call — pure Python verification using the canonicalized
-        certificate payload and the root CA's public key.
-
-        Does NOT check revocation — call get_crl() and is_cert_revoked() for that.
-
-        Parameters
-        ----------
-        cert : PQCert
-            The certificate to verify (type must be CA_CERT).
-        root_cert : PQCert
-            The CA root certificate (type must be CA_ROOT).
-
-        Returns
-        -------
-        VerifyCertResult
-            .valid, .cert (if valid), .error (if not valid)
-
-        Examples
-        --------
-        >>> result = pq.ca.verify_cert(device_cert, root_cert)
-        >>> if not result.valid:
-        ...     raise PermissionError(result.error)
-        """
-        try:
-            _verify_cert_locally(cert, root_cert)
-            return VerifyCertResult(valid=True, cert=cert)
-        except PQAuthError as err:
-            return VerifyCertResult(valid=False, error=err.message)
-        except Exception as err:
-            return VerifyCertResult(valid=False, error=str(err))
-
     def is_cert_revoked(self, cert: PQCert, crl: List[CrlEntry]) -> bool:
         """
         Check if a certificate appears in a CRL.
@@ -307,67 +270,3 @@ class CA:
         ...     raise PermissionError("Device revoked")
         """
         return any(entry.certId == cert.id for entry in crl)
-
-
-# ─── Local certificate verification ──────────────────────────────────────────
-
-def _canonicalize(cert_dict: Dict[str, Any]) -> str:
-    """JSON with keys sorted alphabetically — mirrors the JS canonicalize()."""
-    return json.dumps(cert_dict, sort_keys=True, separators=(",", ":"))
-
-
-def _from_base64(b64: str) -> bytes:
-    return base64.b64decode(b64)
-
-
-def _verify_cert_locally(cert: PQCert, root_cert: PQCert) -> None:
-    """
-    Verify a PQCert signature using the root CA public key.
-    Raises PQAuthError on any failure.
-    """
-    import time as _time
-
-    if cert.type != "CA_CERT":
-        raise PQAuthError(
-            f"Expected a CA_CERT, got {cert.type}", "INVALID_CERT_TYPE"
-        )
-    if root_cert.type != "CA_ROOT":
-        raise PQAuthError(
-            f"Expected a CA_ROOT, got {root_cert.type}", "INVALID_CERT_TYPE"
-        )
-    if cert.caId != root_cert.id:
-        raise PQAuthError(
-            "Certificate was not issued by this CA", "CA_MISMATCH"
-        )
-
-    now = int(_time.time())
-    if cert.expiresAt is not None and cert.expiresAt < now:
-        raise PQAuthError(
-            f"Certificate expired {now - cert.expiresAt} seconds ago",
-            "CERT_EXPIRED",
-        )
-
-    # Reconstruct the canonical payload — same as JS backend
-    cert_dict = cert.to_dict()
-    cert_dict.pop("signature")
-    canonical = _canonicalize(cert_dict)
-
-    try:
-        from dilithium_py.ml_dsa import ML_DSA_65  # type: ignore
-    except ImportError:
-        raise PQAuthError(
-            "offline certificate verification requires dilithium-py. "
-            "Install it with: pip install dilithium-py",
-            "MISSING_DEPENDENCY",
-        )
-
-    pub_key   = _from_base64(root_cert.publicKey)
-    signature = _from_base64(cert.signature)
-    msg       = canonical.encode("utf-8")
-
-    is_valid = ML_DSA_65.verify(pub_key, msg, signature)
-    if not is_valid:
-        raise PQAuthError(
-            "Invalid certificate signature — not issued by this CA",
-            "INVALID_CERT_SIGNATURE",
-        )
