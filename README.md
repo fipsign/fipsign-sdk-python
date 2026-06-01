@@ -47,9 +47,9 @@ The only required argument is `sub` — any string identifying the entity you wa
 ```python
 # Sign a user session
 result = pq.sign("user_123", email="user@example.com", role="admin", expires_in_seconds=3600)
-token   = result.token
-meta    = result.meta
-usage   = result.usage
+token  = result.token
+meta   = result.meta
+usage  = result.usage
 
 # Sign an order
 result = pq.sign("order_456", amount=299.99, currency="USD", expires_in_seconds=300)
@@ -96,7 +96,7 @@ SignResult
 
 ## verify() — Verify a token
 
-**Never raises.** Returns a `VerifyResult` with `valid=False` and an `error` message on any failure.
+**Never raises.** Returns a `VerifyResult` with `valid=False` and an `error` message on any failure. Cost: 1 token.
 
 ```python
 result = pq.verify(token)
@@ -130,12 +130,14 @@ Revoking an already-revoked token returns success without consuming an extra tok
 
 ## Flask middleware
 
+Reads `Authorization: Bearer <token>` and attaches the decoded payload to `flask.g.fipsign_user`. Returns 401 automatically on invalid tokens.
+
 ```python
 from flask import Flask, g
 from fipsign import PQAuth, flask_middleware
 
-app = Flask(__name__)
-pq  = PQAuth("pqa_your_api_key")
+app  = Flask(__name__)
+pq   = PQAuth("pqa_your_api_key")
 auth = flask_middleware(pq)
 
 @app.route("/login", methods=["POST"])
@@ -143,17 +145,17 @@ def login():
     import base64, json
     # authenticate user however you like, then:
     result  = pq.sign(user.id, email=user.email, role=user.role, expires_in_seconds=3600)
-    encoded = base64.b64encode(json.dumps(result.token.__dict__).encode()).decode()
+    encoded = base64.b64encode(json.dumps(result.token.to_dict()).encode()).decode()
     return {"token": encoded}
 
 @app.route("/logout", methods=["POST"])
 def logout():
     import base64, json
     from flask import request
+    from fipsign.types import PQToken
     header = request.headers.get("Authorization", "")
     if header.startswith("Bearer "):
-        from fipsign.types import PQToken
-        token = PQToken(**json.loads(base64.b64decode(header[7:]).decode()))
+        token = PQToken.from_dict(json.loads(base64.b64decode(header[7:]).decode()))
         pq.revoke(token, "user logged out")
     return {"success": True}
 
@@ -171,8 +173,8 @@ def profile():
 from fastapi import FastAPI, Depends
 from fipsign import PQAuth, fastapi_middleware
 
-app         = FastAPI()
-pq          = PQAuth("pqa_your_api_key")
+app          = FastAPI()
+pq           = PQAuth("pqa_your_api_key")
 require_auth = fastapi_middleware(pq)
 
 @app.get("/api/profile")
@@ -184,6 +186,8 @@ def profile(user=Depends(require_auth)):
 
 ## Async client
 
+All methods are identical to `PQAuth` but async. Use in FastAPI, aiohttp, or any asyncio-based application. Requires `pip install fipsign-sdk[async]`.
+
 ```python
 from fipsign.async_client import AsyncPQAuth
 
@@ -191,6 +195,16 @@ async with AsyncPQAuth("pqa_your_api_key") as pq:
     result = await pq.sign("user_123", role="admin", expires_in_seconds=3600)
     v      = await pq.verify(result.token)
     print(v.valid, v.payload["sub"])
+
+    # CA operations work the same way
+    cert = await pq.ca.issue(
+        subject="device-serial-00123",
+        public_key=device_public_key_b64,
+        expires_in_seconds=365 * 24 * 60 * 60,
+    )
+    crl = await pq.ca.get_crl()
+    if pq.ca.is_cert_revoked(cert.meta.certId, crl.crl):
+        raise PermissionError("Device revoked")
 ```
 
 ---
@@ -235,7 +249,7 @@ result = pq.webhooks.register(
 )
 print(result.webhook.secret)  # store this — shown only once
 
-# Send a test event
+# Send a test event to confirm your endpoint is reachable
 pq.webhooks.test()
 
 # Get current config (secret is never returned after registration)
@@ -247,7 +261,11 @@ if config.webhook is None:
 pq.webhooks.delete()
 ```
 
+Re-registering an existing webhook updates the URL and events but preserves the original secret. To rotate the secret, delete and re-register.
+
 ### Verifying incoming webhook requests
+
+Each incoming POST includes the headers `X-PQAuth-Event`, `X-PQAuth-Signature` (`sha256=...`), and `X-PQAuth-Timestamp`.
 
 ```python
 from fipsign.middleware import verify_webhook_signature
@@ -257,23 +275,32 @@ from fipsign.middleware import verify_webhook_signature
 def webhook():
     from flask import request
     sig = request.headers.get("X-PQAuth-Signature", "")
-    if not verify_webhook_signature(request.data, sig, WEBHOOK_SECRET):
-        return {"error": "Invalid signature"}, 401
+    if not verify_webhook_signature(request.data, sig, FIPSIGN_WEBHOOK_SECRET):
+        return "Invalid signature", 401
+
     event = request.json
-    if event["event"] == "limit.warning":
-        print(f"Warning — {event['data']['freeRemaining']} tokens left")
+    match event["event"]:
+        case "limit.warning":
+            print(f"Usage warning — {event['data']['freeRemaining']} free tokens left")
+        case "limit.reached":
+            print(f"Limit reached — pack remaining: {event['data']['packRemaining']}")
+        case "token.revoked":
+            print(f"Token revoked for sub: {event['data']['sub']}")
+
     return "ok", 200
 
-# FastAPI
-from fastapi import Request, HTTPException
 
+# FastAPI
+from fastapi import Request
 @app.post("/webhooks/fipsign")
 async def webhook(request: Request):
     body = await request.body()
     sig  = request.headers.get("X-PQAuth-Signature", "")
-    if not verify_webhook_signature(body, sig, WEBHOOK_SECRET):
-        raise HTTPException(401, detail="Invalid signature")
+    if not verify_webhook_signature(body, sig, FIPSIGN_WEBHOOK_SECRET):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
     event = await request.json()
+    # handle event["event"] ...
     return "ok"
 ```
 
@@ -281,23 +308,26 @@ async def webhook(request: Request):
 
 ## ca — Certificate Authority
 
-Issue and verify post-quantum certificates for devices, services, or any entity that needs a tamper-proof identity. Built on ML-DSA-65 — the same algorithm used for token signing.
+Issue post-quantum certificates for devices, services, or any entity that needs a tamper-proof identity. Built on ML-DSA-65 — the same algorithm used for token signing.
 
-**Typical use case:** A manufacturer of smart locks, IoT sensors, or logistics devices creates a CA root once per project from the dashboard. For each device manufactured, the system calls `ca.issue()` with the device's public key. The device stores its certificate. Revocation checks happen via `ca.get_crl()` and `ca.is_cert_revoked()`.
+**Typical use case:** A manufacturer of smart locks, IoT sensors, or logistics devices creates a CA root once per project from the dashboard. For each device manufactured, the server calls `ca.issue()` with the device's public key. The device stores its certificate. Runtime verification happens entirely offline — no API call needed.
 
-**Setup:** Create a project in the dashboard, then click "Create CA" inside that project. A root certificate will be shown immediately after creation.
+**Setup:** Create a project in the dashboard, then click "Create CA" inside that project. Choose a certificate format:
 
-> **Save the root certificate now.** It is shown only once and cannot be retrieved again. Store it in a secrets manager or secure file — treat it like a private key. You will need it for offline certificate verification via the JavaScript SDK.
+- **PQCert** — FIPSign's native JSON format. Certificates are JSON objects (dataclasses in Python). Simpler to work with in pure Python environments.
+- **X.509** — Standard X.509 v3 PEM certificates signed with ML-DSA-65 (OID `2.16.840.1.101.3.4.3.18`, RFC 9881). Compatible with OpenSSL 3.5+, standard PKI tooling, and enterprise infrastructure.
 
-**One CA per project.** Each project can have one root CA. The CA is created from the dashboard — not via API. When you call `ca.issue()` or other CA methods, the SDK automatically uses the CA associated with the project that owns the API key.
+The format is chosen once at CA creation and applies to all certificates issued by that CA. One CA per project — you cannot mix formats within a project.
+
+> **Save the root certificate now.** It is shown only once at CA creation. Without it, offline certificate verification is not possible. Store it in a secrets manager or secure file — treat it like a private key.
+
+When you call `ca.issue()` or other CA methods, the SDK automatically uses the CA associated with the project that owns the API key. No `caId` parameter needed.
 
 ---
 
 ### Device key pair generation
 
-The Python SDK does not include a `generate_key_pair()` function. This is intentional: there is no production-ready Python library for ML-DSA-65 (NIST FIPS 204) at this time.
-
-To generate an ML-DSA-65 key pair for a device, use the JavaScript SDK at provisioning time:
+The Python SDK does not include a `generate_key_pair()` function. Device key pairs are generated using the **JavaScript SDK** at provisioning time:
 
 ```javascript
 import { generateKeyPair } from 'fipsign-sdk'
@@ -317,6 +347,21 @@ result = pq.ca.issue(
 )
 ```
 
+Alternatively, if you need to generate key pairs in Python directly, use `pyca/cryptography >= 44.0.0`:
+
+```python
+from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65, generate_private_key
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+import base64
+
+private_key = generate_private_key(MLDSA65())
+public_key  = private_key.public_key()
+pub_bytes   = public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
+pub_b64     = base64.b64encode(pub_bytes).decode()
+
+# pass pub_b64 to ca.issue()
+```
+
 ---
 
 ### ca.issue() — Issue a certificate
@@ -325,45 +370,93 @@ Issue a certificate signed by your project's CA. Cost: 1 token.
 
 `expires_in_seconds` is required and must be between 60 seconds (minimum) and 157,680,000 seconds (5 years maximum).
 
+The type of `result.certificate` depends on the CA format:
+
+- **PQCert CA** — `certificate` is a `PQCert` dataclass with fields `.id`, `.caId`, `.signature`, `.expiresAt`, etc.
+- **X.509 CA** — `certificate` is a PEM string (`"-----BEGIN CERTIFICATE-----\n..."`). Certificate metadata is available in `meta`.
+
 ```python
+# PQCert CA
 result = pq.ca.issue(
-    subject="device-serial-00123",       # any identifier
-    public_key=device_public_key_b64,    # base64 ML-DSA-65 public key
-    expires_in_seconds=365 * 24 * 60 * 60,  # required — between 60s and 5 years
+    subject="device-serial-00123",
+    public_key=device_public_key_b64,
+    expires_in_seconds=365 * 24 * 60 * 60,
     meta={"model": "lock-v2", "batch": "2026-05"},  # optional, max 10 keys
 )
 
-print(result.certificate.id)        # cert_...
-print(result.certificate.caId)      # ca_... — the CA that signed it
-print(result.certificate.expiresAt) # Unix timestamp
-print(result.meta.certId)           # same as certificate.id
+# result.certificate is a PQCert dataclass
+print(result.certificate.id)         # cert_...
+print(result.certificate.caId)       # ca_...
+print(result.certificate.expiresAt)  # Unix timestamp
+print(result.meta.certId)            # same as certificate.id
+
+
+# X.509 CA
+result = pq.ca.issue(
+    subject="device-serial-00123",
+    public_key=device_public_key_b64,
+    expires_in_seconds=365 * 24 * 60 * 60,
+)
+
+# result.certificate is a PEM string
+print(type(result.certificate))   # <class 'str'>
+print(result.certificate[:27])    # "-----BEGIN CERTIFICATE-----"
+print(result.meta.certId)         # cert_... — use this for revocation
+print(result.meta.caId)           # ca_...
+print(result.meta.expiresAt)      # Unix timestamp
 ```
+
+> **Note for X.509:** Store `meta.certId` alongside the PEM certificate. You will need it for `ca.revoke_cert()` and `ca.is_cert_revoked()`.
 
 ---
 
 ### ca.verify_cert() — Offline certificate verification
 
-> **Not available in the Python SDK.** No production-ready Python library for ML-DSA-65 (NIST FIPS 204) exists at this time.
+> **Not available in the Python SDK.** Offline verification requires ML-DSA-65 local cryptography.
 >
-> Use the JavaScript SDK for offline verification:
+> **For PQCert CAs**, use the JavaScript SDK:
 > ```javascript
 > import rootCert from './root-cert.json' assert { type: 'json' }
 > const result = fipsign.ca.verifyCert(deviceCert, rootCert)
 > if (!result.valid) return reject(result.error)
 > ```
 >
-> For real-time server-side status checks, use `ca.get_cert()` from Python instead.
+> **For X.509 CAs**, use `pyca/cryptography >= 44.0.0` directly:
+> ```python
+> from cryptography import x509
+> from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65
+>
+> root_cert = x509.load_pem_x509_certificate(root_pem.encode())
+> leaf_cert = x509.load_pem_x509_certificate(leaf_pem.encode())
+> root_pub  = root_cert.public_key()
+>
+> # Raises InvalidSignature on failure, returns None on success
+> root_pub.verify(leaf_cert.signature, leaf_cert.tbs_certificate_bytes, MLDSA65())
+> ```
+>
+> **For real-time server-side status checks**, use `ca.get_cert()` from Python — it returns the live revocation status without needing the root certificate.
 
 ---
 
 ### ca.is_cert_revoked() — Check revocation offline
 
-Check if a certificate appears in a CRL. Offline — pass the result of `ca.get_crl()`.
+Check if a certificate appears in a CRL. Offline — pass the result of `ca.get_crl()`. Works for both PQCert and X.509 formats.
+
+Accepts either a **PQCert object** (for PQCert CAs) or a **certId string** (for X.509 CAs or when you only have the ID). The `certId` is returned in `meta.certId` from `ca.issue()`.
 
 ```python
 crl_result = pq.ca.get_crl()
 
+# PQCert CA — pass the PQCert dataclass
 if pq.ca.is_cert_revoked(device_cert, crl_result.crl):
+    raise PermissionError("Device certificate has been revoked")
+
+# X.509 CA — pass the certId string from meta
+if pq.ca.is_cert_revoked(meta.certId, crl_result.crl):
+    raise PermissionError("Device certificate has been revoked")
+
+# certId string also works for PQCert CAs
+if pq.ca.is_cert_revoked(result.meta.certId, crl_result.crl):
     raise PermissionError("Device certificate has been revoked")
 ```
 
@@ -371,7 +464,7 @@ if pq.ca.is_cert_revoked(device_cert, crl_result.crl):
 
 ### ca.get_crl() — Get the Certificate Revocation List
 
-Fetch the current CRL for your project's CA. Free — no token cost.
+Fetch the current CRL for your project's CA. Free — no token cost. Works for both PQCert and X.509 formats.
 
 Use `get_crl()` when you need to verify revocation in bulk — download the list once and check multiple certificates against it locally using `is_cert_revoked()`. For checking the status of a single certificate in real time (e.g. before a high-value transaction), use `get_cert()` instead.
 
@@ -379,19 +472,23 @@ Use `get_crl()` when you need to verify revocation in bulk — download the list
 result = pq.ca.get_crl()
 
 print(f"CA: {result.subject}")
+print(f"Format: {result.format}")       # "pqcert" or "x509"
 print(f"{len(result.crl)} revoked certificates")
 
+from datetime import datetime
 for entry in result.crl:
-    from datetime import datetime
     # entry.reason may be None if no reason was provided at revocation time
-    print(f"{entry.certId} — {datetime.fromtimestamp(entry.revokedAt).isoformat()} — {entry.reason or 'no reason'}")
+    ts = datetime.fromtimestamp(entry.revokedAt).isoformat()
+    print(f"{entry.certId} — {ts} — {entry.reason or 'no reason'}")
 ```
+
+For X.509 CAs, the CRL is signed with ML-DSA-65 by the CA private key. The raw signed object (including signature) is available in `result.raw` if you need it for verification.
 
 ---
 
 ### ca.get_cert() — Get a certificate by ID
 
-Retrieve a certificate and its current real-time status. Use this for single certificate checks before high-value operations. Free — no token cost.
+Retrieve a certificate and its current real-time status. Use this for single certificate checks before high-value operations. Free — no token cost. Works for both PQCert and X.509 formats.
 
 ```python
 result = pq.ca.get_cert("cert_...")
@@ -400,25 +497,33 @@ print(result.status.revoked)    # bool
 print(result.status.expired)    # bool
 print(result.status.revokedAt)  # Unix timestamp or None
 print(result.status.expiresAt)  # Unix timestamp
+
+# For PQCert CAs, result.certificate is a PQCert dataclass
+# For X.509 CAs, result.certificate is a PEM string
 ```
 
 ---
 
 ### ca.revoke_cert() — Revoke a certificate
 
-Revoke a certificate immediately. Cost: 1 token.
+Revoke a certificate immediately. It will appear in the CRL from this point on. Cost: 1 token.
 
 ```python
+# PQCert CA — use certificate.id
+pq.ca.revoke_cert(device_cert.id, "device decommissioned")
+
+# X.509 CA — use meta.certId from ca.issue()
+pq.ca.revoke_cert(meta.certId, "device reported stolen")
+
+# certId string works for both formats
 pq.ca.revoke_cert("cert_...", "device decommissioned")
-pq.ca.revoke_cert("cert_...", "device reported stolen")
 ```
 
 ---
 
-### Full device lifecycle example
+### Full device lifecycle — PQCert
 
 ```python
-import json
 from fipsign import PQAuth
 
 pq = PQAuth("pqa_your_api_key")
@@ -431,10 +536,9 @@ result = pq.ca.issue(
     expires_in_seconds=365 * 24 * 60 * 60,
     meta={"model": "lock-v3", "batch": "2026-05"},
 )
-certificate = result.certificate
-# store certificate on the device
+certificate = result.certificate   # PQCert dataclass — store on device
 
-# 3. At runtime: check the device is not revoked (server-side, real-time)
+# 3. At runtime: real-time revocation check (single cert, server-side)
 status = pq.ca.get_cert(certificate.id)
 if status.status.revoked:
     raise PermissionError("Device revoked")
@@ -446,6 +550,50 @@ if pq.ca.is_cert_revoked(certificate, crl_result.crl):
 
 # 5. Decommission: revoke the certificate
 pq.ca.revoke_cert(certificate.id, "device decommissioned")
+```
+
+---
+
+### Full device lifecycle — X.509
+
+```python
+from fipsign import PQAuth
+
+pq = PQAuth("pqa_your_api_key")
+
+# root_pem — the PEM string shown once at CA creation, stored securely
+root_pem = os.environ["FIPSIGN_ROOT_CERT_PEM"]
+
+# 1. Factory: generate key pair using the JS SDK, store secretKey on device
+# 2. Factory: issue a certificate for the device
+result  = pq.ca.issue(
+    subject="lock-serial-00123",
+    public_key=device_public_key_b64,    # generated by JS SDK on device
+    expires_in_seconds=365 * 24 * 60 * 60,
+)
+cert_pem = result.certificate    # PEM string — store on device
+cert_id  = result.meta.certId   # store alongside the PEM
+
+# 3. At runtime: offline signature verification (no API call)
+#    Requires pyca/cryptography >= 44.0.0
+from cryptography import x509
+from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65
+
+root_cert = x509.load_pem_x509_certificate(root_pem.encode())
+leaf_cert = x509.load_pem_x509_certificate(cert_pem.encode())
+root_cert.public_key().verify(
+    leaf_cert.signature,
+    leaf_cert.tbs_certificate_bytes,
+    MLDSA65()
+)  # raises InvalidSignature on failure
+
+# 4. At runtime: bulk revocation check (offline, from cached CRL)
+crl_result = pq.ca.get_crl()
+if pq.ca.is_cert_revoked(cert_id, crl_result.crl):
+    raise PermissionError("Device revoked")
+
+# 5. Decommission: revoke the certificate using certId
+pq.ca.revoke_cert(cert_id, "device decommissioned")
 ```
 
 ---
@@ -462,18 +610,25 @@ try:
     result = pq.sign("user_123")
 except PQAuthError as err:
     match err.code:
-        case "INVALID_API_KEY":    # key missing or doesn't start with pqa_
+        case "INVALID_API_KEY":  # key missing or doesn't start with pqa_
             ...
-        case "API_ERROR":          # server returned an error (check err.status)
+        case "API_ERROR":        # server returned an error (check err.status)
             ...
-        case "TIMEOUT":            # request exceeded timeout
+        case "TIMEOUT":          # request exceeded timeout (default: 10s)
             ...
-        case "NETWORK_ERROR":      # connection failed
+        case "NETWORK_ERROR":    # connection failed
             ...
-        case "MISSING_SUB":        # sign() called without sub
+        case "MISSING_SUB":      # sign() called without sub
             ...
     print(err.code, err.message, err.status)
 ```
+
+Common `err.status` values for `API_ERROR`:
+- `400` — invalid parameters (e.g. `expires_in_seconds` out of range, invalid public key)
+- `401` — API key missing or invalid
+- `404` — resource not found (e.g. no active CA for the project)
+- `409` — conflict (e.g. revoking an already-revoked certificate)
+- `429` — token quota exhausted or rate limit exceeded
 
 ---
 
@@ -481,17 +636,17 @@ except PQAuthError as err:
 
 Every account gets **10,000 free tokens per month**, reset on the 1st (UTC). Unused free tokens do not carry over. Additional tokens are available as non-expiring packs, purchased from the dashboard.
 
-Each of these operations costs **1 token**: signing, verification, revocation, certificate issuance (`ca.issue()`), and certificate revocation (`ca.revoke_cert()`). Checking usage, fetching the public key, and all CA read operations (`ca.get_crl()`, `ca.get_cert()`) are free.
+Each of these operations costs **1 token**: signing (`sign()`), verification (`verify()`), revocation (`revoke()`), certificate issuance (`ca.issue()`), and certificate revocation (`ca.revoke_cert()`). Checking usage (`usage()`), fetching the public key, and all CA read operations (`ca.get_crl()`, `ca.get_cert()`) are free.
 
 ---
 
 ## Rate limits
 
-300 requests per minute per API key on `/sign`, `/verify`, and `/revoke`. On excess the API returns HTTP 429.
+300 requests per minute per API key on `sign()`, `verify()`, and `revoke()`. On excess the API returns HTTP 429.
 
-CA operations (`ca.issue()`, `ca.revoke_cert()`) are rate limited at 300 requests per minute per API key. Read operations (`ca.get_crl()`, `ca.get_cert()`) are not rate limited.
+CA operations (`ca.issue()`, `ca.revoke_cert()`) are rate limited at 300 requests per minute per API key, consistent with signing and verification. Read operations (`ca.get_crl()`, `ca.get_cert()`) are not rate limited.
 
-Token quota and rate limits are separate controls:
+Token quota and rate limits are separate controls — check the error message to distinguish them:
 - `"Rate limit exceeded"` → back off and retry with exponential backoff
 - `"Token limit reached"` → purchase a pack from the dashboard, retrying won't help
 
@@ -503,7 +658,7 @@ Token quota and rate limits are separate controls:
 pq = PQAuth(
     api_key="pqa_...",                    # required — must start with pqa_
     base_url="https://api.fipsign.dev",   # optional, override for self-hosting
-    timeout=10,                            # optional, seconds (default: 10)
+    timeout=10,                           # optional, seconds (default: 10)
 )
 ```
 

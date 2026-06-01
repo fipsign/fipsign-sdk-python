@@ -5,7 +5,7 @@ All are plain dataclasses — no behaviour, just structure.
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 
 # ─── Token ────────────────────────────────────────────────────────────────────
@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Literal, Optional
 class PQToken:
     """
     A signed FIPSign token. Pass this object to verify() and revoke().
-    Store it as JSON; reconstruct with PQToken(**data).
+    Store it as JSON; reconstruct with PQToken.from_dict(data).
     """
     payload: str
     signature: str
@@ -23,19 +23,19 @@ class PQToken:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "payload": self.payload,
+            "payload":   self.payload,
             "signature": self.signature,
             "algorithm": self.algorithm,
-            "issuedAt": self.issuedAt,
+            "issuedAt":  self.issuedAt,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PQToken":
         return cls(
-            payload=data["payload"],
-            signature=data["signature"],
-            algorithm=data["algorithm"],
-            issuedAt=data["issuedAt"],
+            payload   = data["payload"],
+            signature = data["signature"],
+            algorithm = data["algorithm"],
+            issuedAt  = data["issuedAt"],
         )
 
 
@@ -43,28 +43,28 @@ class PQToken:
 
 @dataclass
 class SignMeta:
-    algorithm: str
-    standard: str
+    algorithm:        str
+    standard:         str
     quantumResistant: bool
-    expiresIn: int
-    issuedFor: str
-    projectId: str
-    tokenCost: int
-    source: Literal["free", "pack", "free+pack"]
+    expiresIn:        int
+    issuedFor:        str
+    projectId:        str
+    tokenCost:        int
+    source:           Literal["free", "pack", "free+pack"]
 
 
 @dataclass
 class SignUsage:
-    freeRemaining: int
-    packRemaining: int
+    freeRemaining:  int
+    packRemaining:  int
     totalRemaining: int
-    month: str
+    month:          str
 
 
 @dataclass
 class SignResult:
     token: PQToken
-    meta: SignMeta
+    meta:  SignMeta
     usage: SignUsage
 
 
@@ -85,59 +85,59 @@ class VerifyResult:
     error : str | None
         Human-readable error message when valid=False.
     """
-    valid: bool
+    valid:   bool
     payload: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
+    error:   Optional[str]            = None
 
 
 # ─── revoke() ─────────────────────────────────────────────────────────────────
 
 @dataclass
 class RevokeResult:
-    success: bool
-    message: str
+    success:   bool
+    message:   str
     revokedAt: Optional[int] = None
-    sub: Optional[str] = None
+    sub:       Optional[str] = None
     expiresAt: Optional[int] = None
-    note: Optional[str] = None
+    note:      Optional[str] = None
 
 
 # ─── usage() ──────────────────────────────────────────────────────────────────
 
 @dataclass
 class MonthlyEntry:
-    month: str
+    month:      str
     tokensUsed: int
-    fromFree: int
-    fromPack: int
+    fromFree:   int
+    fromPack:   int
 
 
 @dataclass
 class PackEntry:
-    id: str
-    packType: str
+    id:              str
+    packType:        str
     tokensPurchased: int
-    purchasedAt: int
-    paymentRef: Optional[str]
+    purchasedAt:     int
+    paymentRef:      Optional[str]
 
 
 @dataclass
 class UsageCurrent:
-    month: str
-    freeUsed: int
-    freeRemaining: int
-    freeLimit: int
-    packRemaining: int
+    month:          str
+    freeUsed:       int
+    freeRemaining:  int
+    freeLimit:      int
+    packRemaining:  int
     totalRemaining: int
 
 
 @dataclass
 class UsageResult:
-    current: UsageCurrent
+    current:        UsageCurrent
     monthlyHistory: List[MonthlyEntry]
-    packs: List[PackEntry]
-    developer: Dict[str, str]
-    note: str
+    packs:          List[PackEntry]
+    developer:      Dict[str, str]
+    note:           str
 
 
 # ─── webhooks ─────────────────────────────────────────────────────────────────
@@ -153,7 +153,7 @@ WebhookEvent = Literal[
 
 @dataclass
 class WebhookInfo:
-    url: str
+    url:    str
     events: List[str]
     secret: Optional[str] = None  # only present after register(), never in get()
 
@@ -172,16 +172,36 @@ class WebhookGetResult:
 
 @dataclass
 class HealthResult:
-    status: str
-    algorithm: str
+    status:           str
+    algorithm:        str
     quantumResistant: bool
-    version: str
+    version:          str
+
 
 # ─── Certificate Authority ─────────────────────────────────────────────────────
+#
+# Two CA formats are supported by the FIPSign backend:
+#
+#   pqcert — FIPSign's native JSON certificate format.
+#            certificate field is a PQCert dataclass.
+#
+#   x509   — Standard X.509 v3 certificate with ML-DSA-65 signature.
+#            certificate field is a PEM string (str).
+#            Interoperable with OpenSSL 3.5+, standard PKI tooling.
+#
+# The Python SDK handles both formats transparently. The format of a CA is
+# determined at creation time (dashboard) and cannot be changed afterwards.
+# All CA operations (issue, revoke, get_cert, get_crl) work with both formats.
+#
+# Offline cryptographic operations (generateKeyPair, verifyCert, verifyX509Cert)
+# are NOT available in the Python SDK — see ca.py for details and alternatives.
+
+CaFormat = Literal["pqcert", "x509"]
+
 
 @dataclass
 class PQCert:
-    """A post-quantum certificate issued by a FIPSign CA."""
+    """A post-quantum certificate in FIPSign's native PQCert format."""
     type:      str
     id:        str
     subject:   str
@@ -190,9 +210,9 @@ class PQCert:
     algorithm: str
     standard:  str
     signature: str
-    caId:      Optional[str]               = None
-    expiresAt: Optional[int]               = None
-    meta:      Optional[Dict[str, Any]]    = None
+    caId:      Optional[str]            = None
+    expiresAt: Optional[int]            = None
+    meta:      Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -227,6 +247,23 @@ class PQCert:
         )
 
 
+def _parse_certificate(raw: Any) -> Union[PQCert, str]:
+    """
+    Parse a certificate from a backend response.
+
+    The backend returns either:
+      - A dict (pqcert format) → PQCert
+      - A string (x509 PEM format) → str
+
+    This helper is used internally by ca.issue(), ca.get_cert(), etc.
+    """
+    if isinstance(raw, str):
+        return raw          # x509 PEM
+    if isinstance(raw, dict):
+        return PQCert.from_dict(raw)
+    raise ValueError(f"Unexpected certificate type: {type(raw)}")
+
+
 @dataclass
 class CaIssueMeta:
     certId:    str
@@ -236,6 +273,7 @@ class CaIssueMeta:
     expiresAt: int
     algorithm: str
     standard:  str
+    format:    str = "pqcert"  # "pqcert" | "x509"
 
 
 @dataclass
@@ -247,7 +285,20 @@ class CaIssueUsage:
 
 @dataclass
 class CaIssueResult:
-    certificate: PQCert
+    """
+    Result of ca.issue().
+
+    Attributes
+    ----------
+    certificate : PQCert | str
+        For pqcert CAs: a PQCert dataclass.
+        For x509 CAs: a PEM string (-----BEGIN CERTIFICATE-----...).
+    meta : CaIssueMeta
+        certId, caId, subject, issuedAt, expiresAt, algorithm, standard, format.
+    usage : CaIssueUsage
+        Token balance after the operation.
+    """
+    certificate: Union[PQCert, str]
     meta:        CaIssueMeta
     usage:       CaIssueUsage
 
@@ -270,7 +321,18 @@ class CaCertStatus:
 
 @dataclass
 class CaGetCertResult:
-    certificate: PQCert
+    """
+    Result of ca.get_cert().
+
+    Attributes
+    ----------
+    certificate : PQCert | str
+        For pqcert CAs: a PQCert dataclass.
+        For x509 CAs: a PEM string.
+    status : CaCertStatus
+        revoked, expired, revokedAt, expiresAt.
+    """
+    certificate: Union[PQCert, str]
     status:      CaCertStatus
 
 
@@ -283,8 +345,28 @@ class CrlEntry:
 
 @dataclass
 class CaGetCrlResult:
+    """
+    Result of ca.get_crl().
+
+    Attributes
+    ----------
+    caId : str
+    subject : str
+    crl : list[CrlEntry]
+        Revoked certificate entries. Empty list if nothing has been revoked.
+    generatedAt : int
+        Unix timestamp when the CRL was generated.
+    format : str
+        "pqcert" or "x509". For x509 CAs the CRL is also signed with ML-DSA-65;
+        the raw signed CRL object is available in ``raw`` if you need the signature
+        for verification.
+    raw : dict | None
+        For x509 CAs: the full signed CRL object from the backend, including
+        ``signature`` field. None for pqcert CAs.
+    """
     caId:        str
     subject:     str
     crl:         List[CrlEntry]
     generatedAt: int
-
+    format:      str        = "pqcert"
+    raw:         Optional[Dict[str, Any]] = None

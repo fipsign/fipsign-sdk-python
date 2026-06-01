@@ -27,7 +27,7 @@ import requests as _requests
 
 try:
     from fipsign import PQAuth, PQAuthError
-    from fipsign.types import PQToken
+    from fipsign.types import PQToken, PQCert
 except ImportError:
     print("\033[31mError: fipsign package not found. Install it with: pip install fipsign-sdk\033[0m")
     sys.exit(1)
@@ -174,19 +174,19 @@ def run() -> None:
 
     try:
         r = pq.sign("user_test", email="test@example.com", role="admin", expires_in_seconds=3600)
-        if not r.token.payload:              raise AssertionError("missing token.payload")
-        if not r.token.signature:            raise AssertionError("missing token.signature")
-        if r.token.algorithm != "ML-DSA-65": raise AssertionError(f"wrong algorithm: {r.token.algorithm}")
-        if r.meta.tokenCost != 1:            raise AssertionError(f"tokenCost is {r.meta.tokenCost}, expected 1")
+        if not r.token.payload:               raise AssertionError("missing token.payload")
+        if not r.token.signature:             raise AssertionError("missing token.signature")
+        if r.token.algorithm != "ML-DSA-65":  raise AssertionError(f"wrong algorithm: {r.token.algorithm}")
+        if r.meta.tokenCost != 1:             raise AssertionError(f"tokenCost is {r.meta.tokenCost}, expected 1")
         if r.meta.source not in ("free", "pack", "free+pack"):
             raise AssertionError(f"unexpected source: {r.meta.source}")
-        if not r.meta.projectId:             raise AssertionError("missing meta.projectId")
-        if not r.meta.issuedFor:             raise AssertionError("missing meta.issuedFor")
-        if r.meta.expiresIn != 3600:         raise AssertionError(f"meta.expiresIn is {r.meta.expiresIn}, expected 3600")
+        if not r.meta.projectId:              raise AssertionError("missing meta.projectId")
+        if not r.meta.issuedFor:              raise AssertionError("missing meta.issuedFor")
+        if r.meta.expiresIn != 3600:          raise AssertionError(f"meta.expiresIn is {r.meta.expiresIn}, expected 3600")
         if not isinstance(r.usage.freeRemaining, int):  raise AssertionError("missing usage.freeRemaining")
         if not isinstance(r.usage.packRemaining, int):  raise AssertionError("missing usage.packRemaining")
         if not isinstance(r.usage.totalRemaining, int): raise AssertionError("missing usage.totalRemaining")
-        if not r.usage.month:                raise AssertionError("missing usage.month")
+        if not r.usage.month:                 raise AssertionError("missing usage.month")
         log("algorithm",     r.token.algorithm)
         log("tokenCost",     str(r.meta.tokenCost))
         log("source",        r.meta.source)
@@ -252,7 +252,7 @@ def run() -> None:
             r = pq.verify(user_token)
             if not r.valid:               raise AssertionError("valid is False")
             if not r.payload.get("sub"):  raise AssertionError("missing payload.sub")
-            if r.payload["sub"] != "user_test": raise AssertionError(f'sub is "{r.payload["sub"]}", expected "user_test"')
+            if r.payload["sub"] != "user_test":  raise AssertionError(f'sub is "{r.payload["sub"]}", expected "user_test"')
             if r.payload.get("role") != "admin": raise AssertionError(f'role is "{r.payload.get("role")}", expected "admin"')
             if not isinstance(r.payload.get("iat"), (int, float)): raise AssertionError("missing payload.iat")
             if not isinstance(r.payload.get("exp"), (int, float)): raise AssertionError("missing payload.exp")
@@ -269,7 +269,7 @@ def run() -> None:
             import dataclasses
             tampered = dataclasses.replace(user_token, payload="TAMPERED_PAYLOAD")
             r = pq.verify(tampered)
-            if r.valid:   raise AssertionError("valid should be False for tampered token")
+            if r.valid:     raise AssertionError("valid should be False for tampered token")
             if not r.error: raise AssertionError("missing error message")
             log("valid", str(r.valid))
             log("error", r.error)
@@ -355,7 +355,7 @@ def run() -> None:
         print(f"  {DIM}Waiting 2 seconds for token to expire...{RESET}")
         time.sleep(2)
         v = pq.verify(r.token)
-        if v.valid:   raise AssertionError("valid should be False for expired token")
+        if v.valid:     raise AssertionError("valid should be False for expired token")
         if not v.error: raise AssertionError("missing error message")
         log("valid", str(v.valid))
         log("error", v.error)
@@ -367,16 +367,16 @@ def run() -> None:
     section("07 · usage()")
     try:
         r = pq.usage()
-        if not r.current.month:                      raise AssertionError("missing current.month")
-        if not isinstance(r.current.freeUsed, int):       raise AssertionError("missing current.freeUsed")
-        if not isinstance(r.current.freeRemaining, int):  raise AssertionError("missing current.freeRemaining")
-        if not isinstance(r.current.freeLimit, int):      raise AssertionError("missing current.freeLimit")
-        if not isinstance(r.current.packRemaining, int):  raise AssertionError("missing current.packRemaining")
-        if not isinstance(r.current.totalRemaining, int): raise AssertionError("missing current.totalRemaining")
-        if not isinstance(r.monthlyHistory, list):        raise AssertionError("monthlyHistory is not a list")
-        if len(r.monthlyHistory) != 6:                    raise AssertionError(f"monthlyHistory has {len(r.monthlyHistory)} entries, expected 6")
-        if not isinstance(r.packs, list):                 raise AssertionError("packs is not a list")
-        if not r.developer.get("email"):                  raise AssertionError("missing developer.email")
+        if not r.current.month:                           raise AssertionError("missing current.month")
+        if not isinstance(r.current.freeUsed, int):      raise AssertionError("missing current.freeUsed")
+        if not isinstance(r.current.freeRemaining, int): raise AssertionError("missing current.freeRemaining")
+        if not isinstance(r.current.freeLimit, int):     raise AssertionError("missing current.freeLimit")
+        if not isinstance(r.current.packRemaining, int): raise AssertionError("missing current.packRemaining")
+        if not isinstance(r.current.totalRemaining, int):raise AssertionError("missing current.totalRemaining")
+        if not isinstance(r.monthlyHistory, list):       raise AssertionError("monthlyHistory is not a list")
+        if len(r.monthlyHistory) != 6:                   raise AssertionError(f"monthlyHistory has {len(r.monthlyHistory)} entries, expected 6")
+        if not isinstance(r.packs, list):                raise AssertionError("packs is not a list")
+        if not r.developer.get("email"):                 raise AssertionError("missing developer.email")
         log("month",          r.current.month)
         log("freeUsed",       str(r.current.freeUsed))
         log("freeRemaining",  str(r.current.freeRemaining))
@@ -409,7 +409,7 @@ def run() -> None:
     section("09 · verify() — malformed token shapes")
     try:
         r = pq.verify(PQToken(payload="", signature="", algorithm="ML-DSA-65", issuedAt=0))
-        if r.valid:   raise AssertionError("should be invalid")
+        if r.valid:     raise AssertionError("should be invalid")
         if not r.error: raise AssertionError("missing error message")
         log("valid", str(r.valid))
         log("error", r.error)
@@ -419,7 +419,7 @@ def run() -> None:
 
     try:
         r = pq.verify(PQToken(payload="abc", signature="xyz", algorithm="UNKNOWN-ALG", issuedAt=0))
-        if r.valid:   raise AssertionError("should be invalid")
+        if r.valid:     raise AssertionError("should be invalid")
         if not r.error: raise AssertionError("missing error message")
         log("valid", str(r.valid))
         log("error", r.error)
@@ -448,9 +448,9 @@ def run() -> None:
             url=WEBHOOK_URL,
             events=["token.signed", "limit.warning"],
         )
-        if not result.webhook.url:     raise AssertionError("missing webhook.url")
-        if not result.webhook.secret:  raise AssertionError("missing webhook.secret")
-        if not result.webhook.events:  raise AssertionError("events is empty")
+        if not result.webhook.url:    raise AssertionError("missing webhook.url")
+        if not result.webhook.secret: raise AssertionError("missing webhook.secret")
+        if not result.webhook.events: raise AssertionError("events is empty")
         log("url",    result.webhook.url)
         log("events", ", ".join(result.webhook.events))
         log("secret", result.webhook.secret[:8] + "...")
@@ -460,9 +460,9 @@ def run() -> None:
 
     try:
         result = pq.webhooks.get()
-        if result.webhook is None:         raise AssertionError("webhook is None after register")
-        if not result.webhook.url:         raise AssertionError("missing webhook.url")
-        if not result.webhook.events:      raise AssertionError("events is empty")
+        if result.webhook is None:        raise AssertionError("webhook is None after register")
+        if not result.webhook.url:        raise AssertionError("missing webhook.url")
+        if not result.webhook.events:     raise AssertionError("events is empty")
         if result.webhook.secret is not None:
             raise AssertionError("secret should not be returned by get()")
         log("url",    result.webhook.url)
@@ -528,7 +528,7 @@ def run() -> None:
         if not wh_resp.ok:
             raise AssertionError(f"webhook.site API returned {wh_resp.status_code}")
 
-        wh_data  = wh_resp.json()
+        wh_data       = wh_resp.json()
         requests_list = wh_data.get("data", [])
 
         if not requests_list:
@@ -560,9 +560,17 @@ def run() -> None:
     # ─── 13 Certificate Authority ─────────────────────────────────────────────
     section("13 · Certificate Authority")
 
+    # The backend supports two CA formats:
+    #   pqcert — native JSON format, result.certificate is a PQCert dataclass
+    #   x509   — standard X.509 PEM, result.certificate is a str
+    # We detect the format from the returned certificate and run the same
+    # assertions for both, using format-appropriate field access.
+
     # 13.1 ca.issue() — happy path
-    issued_cert    = None
-    issued_cert_id = None
+    issued_cert    = None   # PQCert | str
+    issued_cert_id = None   # str — works for both formats
+    is_x509        = False
+
     try:
         r = pq.ca.issue(
             subject=f"device-test-{int(time.time() * 1000)}",
@@ -570,19 +578,37 @@ def run() -> None:
             expires_in_seconds=86400,
             meta={"env": "test", "sdk": "fipsign-sdk-python"},
         )
-        if not r.certificate:                       raise AssertionError("missing certificate")
-        if r.certificate.type != "CA_CERT":         raise AssertionError(f"expected CA_CERT, got {r.certificate.type}")
-        if not r.certificate.id:                    raise AssertionError("missing certificate.id")
-        if not r.certificate.signature:             raise AssertionError("missing certificate.signature")
-        if not r.certificate.caId:                  raise AssertionError("missing certificate.caId")
-        if not r.certificate.expiresAt:             raise AssertionError("missing certificate.expiresAt")
-        if not r.meta.certId:                       raise AssertionError("missing meta.certId")
+        if not r.certificate:                          raise AssertionError("missing certificate")
+        if not r.meta.certId:                          raise AssertionError("missing meta.certId")
         if not isinstance(r.usage.freeRemaining, int): raise AssertionError("missing usage.freeRemaining")
-        log("certId",    r.meta.certId)
-        log("caId",      r.certificate.caId)
-        log("subject",   r.certificate.subject)
-        log("expiresAt", str(r.certificate.expiresAt))
-        log("algorithm", r.certificate.algorithm)
+
+        is_x509 = isinstance(r.certificate, str)
+
+        if is_x509:
+            # X.509 — certificate is a PEM string, details come from meta
+            if "BEGIN CERTIFICATE" not in r.certificate:
+                raise AssertionError("x509 certificate is not a valid PEM string")
+            if not r.meta.caId:      raise AssertionError("missing meta.caId")
+            if not r.meta.expiresAt: raise AssertionError("missing meta.expiresAt")
+            log("format",     "x509")
+            log("certId",     r.meta.certId)
+            log("caId",       r.meta.caId)
+            log("expiresAt",  str(r.meta.expiresAt))
+            log("pem length", f"{len(r.certificate)} chars")
+        else:
+            # PQCert — certificate is a PQCert dataclass
+            if r.certificate.type != "CA_CERT":  raise AssertionError(f"expected CA_CERT, got {r.certificate.type}")
+            if not r.certificate.id:             raise AssertionError("missing certificate.id")
+            if not r.certificate.signature:      raise AssertionError("missing certificate.signature")
+            if not r.certificate.caId:           raise AssertionError("missing certificate.caId")
+            if not r.certificate.expiresAt:      raise AssertionError("missing certificate.expiresAt")
+            log("format",    "pqcert")
+            log("certId",    r.meta.certId)
+            log("caId",      r.certificate.caId)
+            log("subject",   r.certificate.subject)
+            log("expiresAt", str(r.certificate.expiresAt))
+            log("algorithm", r.certificate.algorithm)
+
         issued_cert    = r.certificate
         issued_cert_id = r.meta.certId
         pass_test("ca.issue() — certificate issued with correct shape")
@@ -624,15 +650,19 @@ def run() -> None:
         fail_test("ca.issue() rejects expires_in_seconds > 5 years", err)
 
     # 13.4 ca.get_crl() — before revocation
+    # PQCert: CaGetCrlResult.crl is List[CrlEntry], caId/subject at root
+    # X.509:  same — the SDK normalizes both into the same CaGetCrlResult shape
     crl_before = None
     try:
         r = pq.ca.get_crl()
-        if not r.caId:                      raise AssertionError("missing caId")
-        if not r.subject:                   raise AssertionError("missing subject")
-        if not isinstance(r.crl, list):     raise AssertionError("crl is not a list")
+        if not r.caId:                         raise AssertionError("missing caId")
+        if not r.subject:                      raise AssertionError("missing subject")
+        if not isinstance(r.crl, list):        raise AssertionError("crl is not a list")
         if not isinstance(r.generatedAt, int): raise AssertionError("missing generatedAt")
+        if r.format not in ("pqcert", "x509"): raise AssertionError(f"unexpected format: {r.format}")
         log("caId",        r.caId)
         log("subject",     r.subject)
+        log("format",      r.format)
         log("crl entries", str(len(r.crl)))
         crl_before = r.crl
         pass_test("ca.get_crl() — CRL returned with correct shape")
@@ -640,26 +670,44 @@ def run() -> None:
         fail_test("ca.get_crl()", err)
 
     # 13.5 ca.is_cert_revoked() — before revocation
+    # Use issued_cert_id (str) — works for both pqcert and x509 formats.
     try:
-        if issued_cert is None or crl_before is None:
+        if issued_cert_id is None or crl_before is None:
             raise AssertionError("skipped — previous steps failed")
-        revoked = pq.ca.is_cert_revoked(issued_cert, crl_before)
+        revoked = pq.ca.is_cert_revoked(issued_cert_id, crl_before)
         if revoked: raise AssertionError("cert should NOT be revoked yet")
+        log("certId",  issued_cert_id[:24] + "...")
         log("revoked", str(revoked))
-        pass_test("ca.is_cert_revoked() — cert correctly not in CRL before revocation")
+        pass_test("ca.is_cert_revoked() with certId string — cert not in CRL before revocation")
     except Exception as err:
         fail_test("ca.is_cert_revoked() before revocation", err)
+
+    # 13.5b ca.is_cert_revoked() with PQCert object (pqcert format only)
+    if not is_x509 and issued_cert is not None and crl_before is not None:
+        try:
+            revoked = pq.ca.is_cert_revoked(issued_cert, crl_before)
+            if revoked: raise AssertionError("cert should NOT be revoked yet")
+            log("revoked", str(revoked))
+            pass_test("ca.is_cert_revoked() with PQCert object — cert not in CRL before revocation")
+        except Exception as err:
+            fail_test("ca.is_cert_revoked() with PQCert object before revocation", err)
 
     # 13.6 ca.get_cert() — existing cert
     try:
         if not issued_cert_id: raise AssertionError("skipped — ca.issue() failed")
         r = pq.ca.get_cert(issued_cert_id)
-        if not r.certificate:            raise AssertionError("missing certificate")
-        if not r.status:                 raise AssertionError("missing status")
-        if r.status.revoked:             raise AssertionError("cert should not be revoked yet")
-        if r.status.expired:             raise AssertionError("cert should not be expired")
+        if not r.certificate:              raise AssertionError("missing certificate")
+        if not r.status:                   raise AssertionError("missing status")
+        if r.status.revoked:               raise AssertionError("cert should not be revoked yet")
+        if r.status.expired:               raise AssertionError("cert should not be expired")
         if r.status.revokedAt is not None: raise AssertionError("revokedAt should be None")
-        log("certId",  r.certificate.id)
+        # Format-appropriate logging
+        if isinstance(r.certificate, str):
+            log("format",  "x509")
+            log("pem",     r.certificate[:27] + "...")
+        else:
+            log("format",  "pqcert")
+            log("certId",  r.certificate.id)
         log("revoked", str(r.status.revoked))
         log("expired", str(r.status.expired))
         pass_test("ca.get_cert() — certificate retrieved with correct status")
@@ -683,8 +731,8 @@ def run() -> None:
     try:
         if not issued_cert_id: raise AssertionError("skipped — ca.issue() failed")
         r = pq.ca.revoke_cert(issued_cert_id, "python sdk integration test")
-        if not r.certId:                      raise AssertionError("missing certId")
-        if not r.revokedAt:                   raise AssertionError("missing revokedAt")
+        if not r.certId:                           raise AssertionError("missing certId")
+        if not r.revokedAt:                        raise AssertionError("missing revokedAt")
         if r.reason != "python sdk integration test": raise AssertionError(f"wrong reason: {r.reason}")
         if not isinstance(r.usage.freeRemaining, int): raise AssertionError("missing usage")
         log("certId",    r.certId)
@@ -707,12 +755,13 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.revoke_cert() duplicate", err)
 
-    # 13.10 ca.get_crl() — after revocation, verify reason field
+    # 13.10 ca.get_crl() — after revocation
     crl_after = None
     try:
         r = pq.ca.get_crl()
+        if not isinstance(r.crl, list): raise AssertionError("crl is not a list")
         crl_after = r.crl
-        # Verify reason field — may be None if no reason was given
+        # Verify reason field for the revoked cert — may be None if no reason was given
         entry = next((e for e in r.crl if e.certId == issued_cert_id), None)
         if entry:
             reason_is_valid = entry.reason is None or isinstance(entry.reason, str)
@@ -724,23 +773,34 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.get_crl() after revocation", err)
 
-    # 13.11 ca.is_cert_revoked() — after revocation
+    # 13.11 ca.is_cert_revoked() — after revocation, using certId string
     try:
-        if issued_cert is None or crl_after is None:
+        if issued_cert_id is None or crl_after is None:
             raise AssertionError("skipped — previous steps failed")
-        revoked = pq.ca.is_cert_revoked(issued_cert, crl_after)
+        revoked = pq.ca.is_cert_revoked(issued_cert_id, crl_after)
         if not revoked: raise AssertionError("cert SHOULD be revoked now")
+        log("certId",  issued_cert_id[:24] + "...")
         log("revoked", str(revoked))
-        pass_test("ca.is_cert_revoked() — cert correctly found in CRL after revocation")
+        pass_test("ca.is_cert_revoked() with certId string — cert found in CRL after revocation")
     except Exception as err:
         fail_test("ca.is_cert_revoked() after revocation", err)
+
+    # 13.11b ca.is_cert_revoked() with PQCert object after revocation (pqcert only)
+    if not is_x509 and issued_cert is not None and crl_after is not None:
+        try:
+            revoked = pq.ca.is_cert_revoked(issued_cert, crl_after)
+            if not revoked: raise AssertionError("cert SHOULD be revoked now")
+            log("revoked", str(revoked))
+            pass_test("ca.is_cert_revoked() with PQCert object — cert found in CRL after revocation")
+        except Exception as err:
+            fail_test("ca.is_cert_revoked() with PQCert object after revocation", err)
 
     # 13.12 ca.get_cert() — status after revocation
     try:
         if not issued_cert_id: raise AssertionError("skipped — ca.issue() failed")
         r = pq.ca.get_cert(issued_cert_id)
-        if not r.status.revoked:    raise AssertionError("cert should be revoked now")
-        if not r.status.revokedAt:  raise AssertionError("revokedAt should be set")
+        if not r.status.revoked:   raise AssertionError("cert should be revoked now")
+        if not r.status.revokedAt: raise AssertionError("revokedAt should be set")
         log("revoked",   str(r.status.revoked))
         log("revokedAt", str(r.status.revokedAt))
         pass_test("ca.get_cert() after revocation — status.revoked is True")

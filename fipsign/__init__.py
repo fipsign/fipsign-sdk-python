@@ -4,11 +4,65 @@ Uses ML-DSA-65 (NIST FIPS 204) — resistant to quantum computers.
 
 Sign anything: users, orders, documents, devices, events.
 The only required field is `sub` — any string identifying the entity.
+
+CA formats supported:
+  pqcert — FIPSign native JSON certificate format
+  x509   — Standard X.509 v3 with ML-DSA-65, interoperable with OpenSSL 3.5+
 """
 
 from .client import PQAuth
+from .async_client import AsyncPQAuth
 from .errors import PQAuthError
 from .middleware import flask_middleware, fastapi_middleware
+from .types import (
+    # Token
+    PQToken,
+    # sign()
+    SignResult, SignMeta, SignUsage,
+    # verify()
+    VerifyResult,
+    # revoke()
+    RevokeResult,
+    # usage()
+    UsageResult, UsageCurrent, MonthlyEntry, PackEntry,
+    # webhooks
+    WebhookResult, WebhookGetResult, WebhookInfo,
+    # health
+    HealthResult,
+    # CA
+    PQCert, CaFormat,
+    CaIssueResult, CaIssueMeta, CaIssueUsage,
+    CaRevokeCertResult,
+    CaGetCertResult, CaCertStatus,
+    CaGetCrlResult, CrlEntry,
+)
 
-__all__ = ["PQAuth", "PQAuthError", "flask_middleware", "fastapi_middleware"]
-__version__ = "0.7.0"
+__all__ = [
+    "PQAuth",
+    "AsyncPQAuth",
+    "PQAuthError",
+    "flask_middleware",
+    "fastapi_middleware",
+    # Token
+    "PQToken",
+    # sign()
+    "SignResult", "SignMeta", "SignUsage",
+    # verify()
+    "VerifyResult",
+    # revoke()
+    "RevokeResult",
+    # usage()
+    "UsageResult", "UsageCurrent", "MonthlyEntry", "PackEntry",
+    # webhooks
+    "WebhookResult", "WebhookGetResult", "WebhookInfo",
+    # health
+    "HealthResult",
+    # CA
+    "PQCert", "CaFormat",
+    "CaIssueResult", "CaIssueMeta", "CaIssueUsage",
+    "CaRevokeCertResult",
+    "CaGetCertResult", "CaCertStatus",
+    "CaGetCrlResult", "CrlEntry",
+]
+
+__version__ = "0.8.0"
