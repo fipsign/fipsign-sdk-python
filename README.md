@@ -190,6 +190,7 @@ All methods are identical to `PQAuth` but async. Use in FastAPI, aiohttp, or any
 
 ```python
 from fipsign.async_client import AsyncPQAuth
+from fipsign import generate_key_pair
 
 async with AsyncPQAuth("pqa_your_api_key") as pq:
     result = await pq.sign("user_123", role="admin", expires_in_seconds=3600)
@@ -197,9 +198,10 @@ async with AsyncPQAuth("pqa_your_api_key") as pq:
     print(v.valid, v.payload["sub"])
 
     # CA operations work the same way
+    kp   = generate_key_pair()  # generate_key_pair() is synchronous
     cert = await pq.ca.issue(
         subject="device-serial-00123",
-        public_key=device_public_key_b64,
+        public_key=kp.publicKey,
         expires_in_seconds=365 * 24 * 60 * 60,
     )
     crl = await pq.ca.get_crl()
@@ -263,6 +265,74 @@ pq.webhooks.delete()
 
 Re-registering an existing webhook updates the URL and events but preserves the original secret. To rotate the secret, delete and re-register.
 
+### Webhook event payloads
+
+Each incoming POST has a top-level `event` string and a `data` dict. The fields available in `data` depend on the event type:
+
+**`token.signed`**
+```python
+{
+    "sub":            str,          # subject passed to sign()
+    "email":          str | None,
+    "role":           str | None,
+    "projectId":      str,
+    "apiKeyName":     str,
+    "tokensUsed":     int,
+    "freeRemaining":  int,
+    "packRemaining":  int,
+    "totalRemaining": int,
+    "source":         str,          # "free" | "pack" | "free+pack"
+    "month":          str,          # e.g. "2026-05"
+}
+```
+
+**`token.rejected`**
+```python
+{
+    "reason":     str,          # why verification failed
+    "sub":        str | None,   # subject extracted from payload (if decodable)
+    "projectId":  str,
+    "apiKeyName": str,
+}
+```
+
+**`token.revoked`**
+```python
+{
+    "sub":            str,
+    "reason":         str,
+    "apiKeyName":     str,
+    "projectId":      str,
+    "freeRemaining":  int,
+    "packRemaining":  int,
+    "totalRemaining": int,
+}
+```
+
+**`limit.warning`** — fired when free tokens drop below 20% of monthly limit
+```python
+{
+    "freeRemaining":  int,
+    "freeLimit":      int,    # always 10000
+    "packRemaining":  int,
+    "totalRemaining": int,
+    "percentUsed":    int,    # e.g. 82
+    "month":          str,
+    "apiKeyName":     str,
+}
+```
+
+**`limit.reached`** — fired when free tokens are exhausted and no pack is available
+```python
+{
+    "freeRemaining":  int,    # always 0
+    "packRemaining":  int,
+    "totalRemaining": int,
+    "month":          str,
+    "apiKeyName":     str,
+}
+```
+
 ### Verifying incoming webhook requests
 
 Each incoming POST includes the headers `X-PQAuth-Event`, `X-PQAuth-Signature` (`sha256=...`), and `X-PQAuth-Timestamp`.
@@ -325,38 +395,44 @@ When you call `ca.issue()` or other CA methods, the SDK automatically uses the C
 
 ---
 
-### Device key pair generation
+### generate_key_pair() — Generate a key pair for a device
 
-The Python SDK does not include a `generate_key_pair()` function. Device key pairs are generated using the **JavaScript SDK** at provisioning time:
+Generate an ML-DSA-65 key pair for a device or entity. The device keeps the `secretKey` and the server passes the `publicKey` to `ca.issue()`. Works for both PQCert and X.509 CAs.
 
-```javascript
-import { generateKeyPair } from 'fipsign-sdk'
-
-const { publicKey, secretKey } = await generateKeyPair()
-// store secretKey securely on the device — never send it to the server
-// pass publicKey to ca.issue() to obtain a certificate
-```
-
-Then call `ca.issue()` from Python with the `publicKey`:
+Requires `cryptography >= 48.0.0`, which is included as a dependency — no additional install needed.
 
 ```python
-result = pq.ca.issue(
-    subject="device-serial-00123",
-    public_key=public_key_from_js,   # base64 ML-DSA-65 public key
-    expires_in_seconds=365 * 24 * 60 * 60,
-)
+from fipsign import generate_key_pair
+
+kp = generate_key_pair()
+# kp.publicKey — base64(1952 bytes) — pass to ca.issue()
+# kp.secretKey — base64(32 bytes, seed form) — store securely on the device
 ```
 
-Alternatively, if you need to generate key pairs in Python directly, use `pyca/cryptography >= 44.0.0`:
+> **Important — secretKey format:** The `secretKey` is the 32-byte ML-DSA-65 seed, **not** the 4032-byte expanded key returned by the JS SDK's `generateKeyPair()`. The formats are not interchangeable.
+>
+> Use `generate_key_pair()` when the device runs Python. If the device runs JavaScript (Node.js, browser, firmware), use `generateKeyPair()` from the JS SDK instead.
+
+**To sign from Python using the returned secretKey:**
 
 ```python
-from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65, generate_private_key
+from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65PrivateKey
+import base64
+
+private_key = MLDSA65PrivateKey.from_seed_bytes(base64.b64decode(kp.secretKey))
+signature   = private_key.sign(message)   # bytes, 3309 bytes for ML-DSA-65
+```
+
+**Alternatively, generate key pairs in Python using pyca/cryptography directly** (same underlying library):
+
+```python
+from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 import base64
 
-private_key = generate_private_key(MLDSA65())
+private_key = MLDSA65PrivateKey.generate()
 public_key  = private_key.public_key()
-pub_bytes   = public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
+pub_bytes   = public_key.public_bytes_raw()   # 1952 bytes
 pub_b64     = base64.b64encode(pub_bytes).decode()
 
 # pass pub_b64 to ca.issue()
@@ -379,7 +455,7 @@ The type of `result.certificate` depends on the CA format:
 # PQCert CA
 result = pq.ca.issue(
     subject="device-serial-00123",
-    public_key=device_public_key_b64,
+    public_key=kp.publicKey,
     expires_in_seconds=365 * 24 * 60 * 60,
     meta={"model": "lock-v2", "batch": "2026-05"},  # optional, max 10 keys
 )
@@ -389,13 +465,15 @@ print(result.certificate.id)         # cert_...
 print(result.certificate.caId)       # ca_...
 print(result.certificate.expiresAt)  # Unix timestamp
 print(result.meta.certId)            # same as certificate.id
+print(result.meta.format)            # "pqcert"
 
 
 # X.509 CA
 result = pq.ca.issue(
     subject="device-serial-00123",
-    public_key=device_public_key_b64,
+    public_key=kp.publicKey,
     expires_in_seconds=365 * 24 * 60 * 60,
+    # meta is not supported for X.509 CAs — passing it returns 400
 )
 
 # result.certificate is a PEM string
@@ -404,6 +482,7 @@ print(result.certificate[:27])    # "-----BEGIN CERTIFICATE-----"
 print(result.meta.certId)         # cert_... — use this for revocation
 print(result.meta.caId)           # ca_...
 print(result.meta.expiresAt)      # Unix timestamp
+print(result.meta.format)         # "x509"
 ```
 
 > **Note for X.509:** Store `meta.certId` alongside the PEM certificate. You will need it for `ca.revoke_cert()` and `ca.is_cert_revoked()`.
@@ -412,7 +491,7 @@ print(result.meta.expiresAt)      # Unix timestamp
 
 ### ca.verify_cert() — Offline certificate verification
 
-> **Not available in the Python SDK.** Offline verification requires ML-DSA-65 local cryptography.
+> **Not available in the Python SDK.** Offline verification requires ML-DSA-65 local cryptography over FIPSign's PQCert JSON format.
 >
 > **For PQCert CAs**, use the JavaScript SDK:
 > ```javascript
@@ -499,7 +578,14 @@ print(result.status.revokedAt)  # Unix timestamp or None
 print(result.status.expiresAt)  # Unix timestamp
 
 # For PQCert CAs, result.certificate is a PQCert dataclass
-# For X.509 CAs, result.certificate is a PEM string
+# For X.509 CAs, result.certificate is a PEM string and result.meta contains
+# additional fields:
+if result.meta:
+    print(result.meta.certId)    # cert_...
+    print(result.meta.caId)      # ca_...
+    print(result.meta.subject)   # "device-serial-00123"
+    print(result.meta.format)    # "x509"
+    print(result.meta.algorithm) # "ML-DSA-65"
 ```
 
 ---
@@ -513,7 +599,8 @@ Revoke a certificate immediately. It will appear in the CRL from this point on. 
 pq.ca.revoke_cert(device_cert.id, "device decommissioned")
 
 # X.509 CA — use meta.certId from ca.issue()
-pq.ca.revoke_cert(meta.certId, "device reported stolen")
+result = pq.ca.revoke_cert(meta.certId, "device reported stolen")
+# For X.509 CAs, result.format == "x509"
 
 # certId string works for both formats
 pq.ca.revoke_cert("cert_...", "device decommissioned")
@@ -524,15 +611,19 @@ pq.ca.revoke_cert("cert_...", "device decommissioned")
 ### Full device lifecycle — PQCert
 
 ```python
-from fipsign import PQAuth
+from fipsign import PQAuth, generate_key_pair
 
 pq = PQAuth("pqa_your_api_key")
 
-# 1. Factory: generate key pair using the JS SDK, store secretKey on device
+# 1. Factory: generate key pair for the device
+kp = generate_key_pair()
+# kp.secretKey — store securely on the device (32-byte seed, base64)
+# kp.publicKey — pass to ca.issue()
+
 # 2. Factory: issue a certificate for the device
 result = pq.ca.issue(
     subject="lock-serial-00123",
-    public_key=device_public_key_b64,    # generated by JS SDK on device
+    public_key=kp.publicKey,
     expires_in_seconds=365 * 24 * 60 * 60,
     meta={"model": "lock-v3", "batch": "2026-05"},
 )
@@ -557,25 +648,29 @@ pq.ca.revoke_cert(certificate.id, "device decommissioned")
 ### Full device lifecycle — X.509
 
 ```python
-from fipsign import PQAuth
+from fipsign import PQAuth, generate_key_pair
 
 pq = PQAuth("pqa_your_api_key")
 
 # root_pem — the PEM string shown once at CA creation, stored securely
 root_pem = os.environ["FIPSIGN_ROOT_CERT_PEM"]
 
-# 1. Factory: generate key pair using the JS SDK, store secretKey on device
+# 1. Factory: generate key pair for the device
+kp = generate_key_pair()
+# kp.secretKey — store securely on the device (32-byte seed, base64)
+# kp.publicKey — pass to ca.issue()
+
 # 2. Factory: issue a certificate for the device
 result  = pq.ca.issue(
     subject="lock-serial-00123",
-    public_key=device_public_key_b64,    # generated by JS SDK on device
+    public_key=kp.publicKey,
     expires_in_seconds=365 * 24 * 60 * 60,
 )
 cert_pem = result.certificate    # PEM string — store on device
 cert_id  = result.meta.certId   # store alongside the PEM
 
 # 3. At runtime: offline signature verification (no API call)
-#    Requires pyca/cryptography >= 44.0.0
+#    Requires pyca/cryptography >= 44.0.0 (included as a dependency)
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65
 
@@ -610,7 +705,7 @@ try:
     result = pq.sign("user_123")
 except PQAuthError as err:
     match err.code:
-        case "INVALID_API_KEY":  # key missing or doesn't start with pqa_
+        case "INVALID_API_KEY":  # key missing or doesn't match pqa_ + 64 hex chars
             ...
         case "API_ERROR":        # server returned an error (check err.status)
             ...
@@ -624,7 +719,7 @@ except PQAuthError as err:
 ```
 
 Common `err.status` values for `API_ERROR`:
-- `400` — invalid parameters (e.g. `expires_in_seconds` out of range, invalid public key)
+- `400` — invalid parameters (e.g. `expires_in_seconds` out of range, invalid public key, `meta` passed to X.509 CA)
 - `401` — API key missing or invalid
 - `404` — resource not found (e.g. no active CA for the project)
 - `409` — conflict (e.g. revoking an already-revoked certificate)
@@ -656,18 +751,19 @@ Token quota and rate limits are separate controls — check the error message to
 
 ```python
 pq = PQAuth(
-    api_key="pqa_...",                    # required — must start with pqa_
+    api_key="pqa_...",                    # required — pqa_ + 64 lowercase hex chars
     base_url="https://api.fipsign.dev",   # optional, override for self-hosting
     timeout=10,                           # optional, seconds (default: 10)
+    session=None,                         # optional, custom requests.Session
 )
 ```
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `api_key` | str | — | Required. From the dashboard. Raises `INVALID_API_KEY` immediately if not prefixed with `pqa_`. |
+| `api_key` | str | — | Required. From the dashboard. Must match `pqa_` followed by 64 lowercase hex characters. Raises `INVALID_API_KEY` immediately if the format doesn't match. |
 | `base_url` | str | `https://api.fipsign.dev` | Override for local dev or self-hosted instances. |
 | `timeout` | float | `10` | Request timeout in seconds. Raises `TIMEOUT` on exceeded. |
-| `session` | requests.Session | — | Custom session (e.g. for proxies or custom TLS). |
+| `session` | requests.Session | `None` | Custom session for proxies, custom TLS, or testing. |
 
 ---
 
@@ -692,6 +788,7 @@ python tests/test_sdk.py
 
 - Dashboard: [app.fipsign.dev](https://app.fipsign.dev)
 - Developer guide: [fipsign.dev/guide](https://fipsign.dev/guide)
-- API status: [api.fipsign.dev/health](https://api.fipsign.dev/health)
+- API status: [status.fipsign.dev](https://status.fipsign.dev)
+- API health: [api.fipsign.dev/health](https://api.fipsign.dev/health)
 - JS SDK: [npmjs.com/package/fipsign-sdk](https://www.npmjs.com/package/fipsign-sdk)
 - NIST FIPS 204: [csrc.nist.gov/pubs/fips/204/final](https://csrc.nist.gov/pubs/fips/204/final)

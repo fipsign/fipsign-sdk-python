@@ -9,6 +9,7 @@ Use this in FastAPI, aiohttp, or any asyncio-based application.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional, Union
 
 try:
@@ -20,6 +21,7 @@ except ImportError:
 
 from .errors import PQAuthError
 from .types import (
+    CaGetCertMeta,
     CaGetCertResult,
     CaGetCrlResult,
     CaIssueMeta,
@@ -49,6 +51,10 @@ from .types import (
 DEFAULT_BASE_URL = "https://api.fipsign.dev"
 DEFAULT_TIMEOUT  = 10
 
+# API keys must be "pqa_" followed by exactly 64 lowercase hex characters.
+# Mirrors the validation in the JS SDK: /^pqa_[0-9a-f]{64}$/
+_API_KEY_RE = re.compile(r"^pqa_[0-9a-f]{64}$")
+
 
 # ─── AsyncWebhooks ────────────────────────────────────────────────────────────
 
@@ -71,7 +77,14 @@ class AsyncWebhooks:
         wh   = data.get("webhook")
         if wh is None:
             return WebhookGetResult(webhook=None)
-        return WebhookGetResult(webhook=WebhookInfo(url=wh["url"], events=wh["events"]))
+        return WebhookGetResult(
+            webhook=WebhookInfo(
+                url=wh["url"],
+                events=wh["events"],
+                active=wh.get("active"),
+                createdAt=wh.get("createdAt"),
+            )
+        )
 
     async def delete(self) -> dict:
         return await self._client._request("DELETE", "/webhooks")
@@ -87,7 +100,8 @@ class AsyncCA:
     Async Certificate Authority sub-client.
 
     Mirrors CA (sync) 1:1. Supports both pqcert and x509 CA formats.
-    See ca.py for full documentation on formats and offline operation limitations.
+    See ca.py for full documentation on formats, generate_key_pair(), and
+    offline operation alternatives.
 
     Usage
     -----
@@ -127,10 +141,11 @@ class AsyncCA:
             Entity identifier. Max 256 characters.
         public_key : str
             Base64-encoded ML-DSA-65 public key (1952 bytes decoded).
+            Generate with ``fipsign.ca.generate_key_pair()`` or the JS SDK.
         expires_in_seconds : int
             Certificate lifetime. Min 60, max 157_680_000 (5 years).
         meta : dict, optional
-            Up to 10 key-value pairs (pqcert only).
+            Up to 10 key-value pairs (pqcert only; returns 400 for x509 CAs).
 
         Returns
         -------
@@ -209,6 +224,7 @@ class AsyncCA:
                 packRemaining  = u["packRemaining"],
                 totalRemaining = u["totalRemaining"],
             ),
+            format = data.get("format"),  # "x509" for X.509 CAs, absent for pqcert
         )
 
     async def get_cert(self, cert_id: str) -> CaGetCertResult:
@@ -225,6 +241,8 @@ class AsyncCA:
         CaGetCertResult
             .certificate — PQCert (pqcert) or PEM string (x509)
             .status      — revoked, expired, revokedAt, expiresAt
+            .meta        — certId, caId, subject, format, algorithm
+                           (x509 CAs only; None for pqcert)
 
         Examples
         --------
@@ -234,6 +252,18 @@ class AsyncCA:
         """
         data = await self._client._request("GET", f"/ca/certificate/{cert_id}")
         s    = data["status"]
+
+        raw_meta = data.get("meta")
+        parsed_meta: Optional[CaGetCertMeta] = None
+        if raw_meta is not None:
+            parsed_meta = CaGetCertMeta(
+                certId    = raw_meta["certId"],
+                caId      = raw_meta["caId"],
+                subject   = raw_meta["subject"],
+                format    = raw_meta["format"],
+                algorithm = raw_meta["algorithm"],
+            )
+
         return CaGetCertResult(
             certificate = _parse_certificate(data["certificate"]),
             status      = CaCertStatus(
@@ -242,6 +272,7 @@ class AsyncCA:
                 revokedAt = s.get("revokedAt"),
                 expiresAt = s["expiresAt"],
             ),
+            meta = parsed_meta,
         )
 
     async def get_crl(self) -> CaGetCrlResult:
@@ -355,10 +386,10 @@ class AsyncPQAuth:
         base_url: str  = DEFAULT_BASE_URL,
         timeout:  float = DEFAULT_TIMEOUT,
     ) -> None:
-        if not api_key or not api_key.startswith("pqa_"):
+        if not api_key or not _API_KEY_RE.match(api_key):
             raise PQAuthError(
-                'Invalid API key — keys must start with "pqa_". '
-                "Get one at https://app.fipsign.dev",
+                'Invalid API key — keys must be "pqa_" followed by 64 lowercase hex '
+                "characters. Get one at https://app.fipsign.dev",
                 "INVALID_API_KEY",
             )
         self._api_key  = api_key
@@ -396,6 +427,9 @@ class AsyncPQAuth:
         except httpx.TimeoutException:
             raise PQAuthError("Request timed out", "TIMEOUT")
         except httpx.NetworkError as exc:
+            raise PQAuthError(f"Network error: {exc}", "NETWORK_ERROR")
+        except Exception as exc:
+            # Catch other httpx exceptions (ProtocolError, etc.) and wrap them
             raise PQAuthError(f"Network error: {exc}", "NETWORK_ERROR")
 
         try:
@@ -552,7 +586,15 @@ class AsyncPQAuth:
         return resp.json()["publicKey"]
 
     async def health(self) -> HealthResult:
-        """Check the health of the FIPSign service."""
+        """
+        Check the health of the FIPSign service.
+
+        Returns
+        -------
+        HealthResult
+            .status, .algorithm, .standard ("NIST FIPS 204"),
+            .quantumResistant, .version
+        """
         try:
             resp = await self._http.get(f"{self._base_url}/health")
             data = resp.json()
@@ -560,9 +602,12 @@ class AsyncPQAuth:
             raise PQAuthError("Request timed out", "TIMEOUT")
         except httpx.NetworkError as exc:
             raise PQAuthError(f"Network error: {exc}", "NETWORK_ERROR")
+        except Exception as exc:
+            raise PQAuthError(f"Network error: {exc}", "NETWORK_ERROR")
         return HealthResult(
             status           = data.get("status", ""),
             algorithm        = data.get("algorithm", ""),
+            standard         = data.get("standard", ""),
             quantumResistant = data.get("quantumResistant", False),
             version          = data.get("version", ""),
         )

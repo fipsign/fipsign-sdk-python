@@ -14,77 +14,77 @@ Two CA formats are supported:
           a PEM string. All server-side operations (issue, revoke, get_cert,
           get_crl) are fully supported in Python.
 
+generate_key_pair()
+-------------------
+Available as a top-level function in this module. Generates an ML-DSA-65
+key pair using pyca/cryptography >= 48.0.0 (required). Works out of the
+box with a standard ``pip install cryptography`` since cryptography 48.0.0
+ships wheels with OpenSSL 4.0.0 which includes ML-DSA support.
+
+    from fipsign.ca import generate_key_pair
+
+    kp = generate_key_pair()
+    # kp.publicKey — base64(1952 bytes) — pass to ca.issue()
+    # kp.secretKey — base64(32 bytes, seed form) — store on device
+
+    # To sign from Python using secretKey:
+    from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65PrivateKey
+    import base64
+    private_key = MLDSA65PrivateKey.from_seed_bytes(base64.b64decode(kp.secretKey))
+    signature   = private_key.sign(message)
+
+**secretKey format note:** The ``secretKey`` returned by ``generate_key_pair()``
+is the 32-byte ML-DSA-65 seed — NOT the 4032-byte expanded key returned by
+the JS SDK's ``generateKeyPair()``. The formats are not interchangeable.
+If the device signs using the JS SDK, generate the key pair with
+``generateKeyPair()`` from the JS SDK instead.
+
 Note on offline cryptographic operations
 -----------------------------------------
 The following JS SDK methods are NOT available in the Python SDK:
 
-  generateKeyPair()
-      Generates an ML-DSA-65 keypair for a device or entity.
-      Not available because there is no Python library with the same
-      audit profile as @noble/post-quantum (used by the JS SDK).
-
-      Alternative: use the JS SDK on the device side (Node.js, browser,
-      firmware). Or use pyca/cryptography >= 44.0.0 directly:
-
-          from cryptography.hazmat.primitives.asymmetric.mldsa import (
-              MLDSAPrivateKey, generate_private_key
-          )
-          from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65
-          private_key = generate_private_key(MLDSA65())
-          public_key  = private_key.public_key()
-          # Serialize public key to base64 for ca.issue():
-          import base64
-          from cryptography.hazmat.primitives.serialization import (
-              Encoding, PublicFormat
-          )
-          pub_bytes = public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
-          pub_b64   = base64.b64encode(pub_bytes).decode()
-
   ca.verifyCert(cert, root_cert)
       Verifies a PQCert certificate signature offline (no API call).
-      Not available: requires ML-DSA-65 local crypto.
+      Not available: requires ML-DSA-65 local crypto without a Python
+      library that provides the same audit profile.
 
       Alternative for pqcert format: verify server-side via ca.get_cert()
       which returns the live revocation status. Or use the JS SDK.
 
   ca.verifyX509Cert(cert_pem, root_pem)
       Verifies an X.509 PEM certificate offline (no API call).
-      Not available: requires ML-DSA-65 local crypto + ASN.1 parsing.
 
-      Alternative for x509 format: use pyca/cryptography >= 44.0.0:
+      Alternative for x509 format: use pyca/cryptography >= 48.0.0:
 
           from cryptography import x509
           from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65
-          from cryptography.hazmat.primitives.serialization import load_pem_public_key
-          import base64
 
-          # Load root cert to get its public key
-          root_cert   = x509.load_pem_x509_certificate(root_pem.encode())
-          root_pub    = root_cert.public_key()
+          root_cert = x509.load_pem_x509_certificate(root_pem.encode())
+          leaf_cert = x509.load_pem_x509_certificate(leaf_pem.encode())
+          root_pub  = root_cert.public_key()
 
-          # Load leaf cert and verify its signature
-          leaf_cert   = x509.load_pem_x509_certificate(leaf_pem.encode())
-          tbs_der     = leaf_cert.tbs_certificate_bytes
-          signature   = leaf_cert.signature
-          root_pub.verify(signature, tbs_der, MLDSA65())
-          # Raises InvalidSignature on failure, returns None on success.
+          # Raises InvalidSignature on failure, returns None on success
+          root_pub.verify(leaf_cert.signature, leaf_cert.tbs_certificate_bytes, MLDSA65())
 
 The typical FIPSign workflow is:
-  1. Device generates keypair with JS SDK (generateKeyPair())
+  1. Server (or device setup script) generates keypair with generate_key_pair()
   2. Server issues cert with Python SDK (pq.ca.issue())
   3. Device verifies cert with JS SDK (pq.ca.verifyCert() or verifyX509Cert())
+     or with pyca/cryptography for x509
   4. Server checks revocation with Python SDK (pq.ca.get_crl() + is_cert_revoked())
 
 All server-side operations work fully from Python. The JS SDK handles device-side
-cryptography. Both SDKs share the same API key and backend.
+cryptography for PQCert offline verification.
 """
 
 from __future__ import annotations
 
+import base64
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from .errors import PQAuthError
 from .types import (
+    CaGetCertMeta,
     CaGetCertResult,
     CaGetCrlResult,
     CaIssueMeta,
@@ -93,6 +93,7 @@ from .types import (
     CaRevokeCertResult,
     CaCertStatus,
     CrlEntry,
+    KeyPairResult,
     PQCert,
     _parse_certificate,
 )
@@ -100,6 +101,88 @@ from .types import (
 if TYPE_CHECKING:
     from .client import PQAuth
 
+
+# ─── generate_key_pair() ──────────────────────────────────────────────────────
+
+def generate_key_pair() -> KeyPairResult:
+    """
+    Generate an ML-DSA-65 key pair for a device or entity.
+
+    Requires ``pyca/cryptography >= 48.0.0``. Install with::
+
+        pip install "cryptography>=48.0.0"
+
+    The standard ``pip install cryptography`` gives you 48.0.0 or later,
+    which ships wheels with OpenSSL 4.0.0 — ML-DSA support is included
+    out of the box.
+
+    Returns
+    -------
+    KeyPairResult
+        .publicKey — base64(1952 bytes). Pass to ``pq.ca.issue()``.
+                     Compatible with the FIPSign backend and the JS SDK.
+        .secretKey — base64(32 bytes, seed form). Store securely on the device.
+                     **Not** the 4032-byte expanded key returned by the JS SDK.
+
+    Notes
+    -----
+    The ``secretKey`` is the 32-byte ML-DSA-65 seed, not the expanded key.
+    The JS SDK's ``generateKeyPair()`` returns a 4032-byte expanded key.
+    These formats are NOT interchangeable.
+
+    Use this function when the device runs Python. If the device runs
+    JavaScript (Node.js, browser, firmware), use ``generateKeyPair()``
+    from the JS SDK instead — the JS secretKey cannot be reconstructed
+    from the Python secretKey.
+
+    To sign from Python using the returned secretKey::
+
+        from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65PrivateKey
+        import base64
+
+        private_key = MLDSA65PrivateKey.from_seed_bytes(
+            base64.b64decode(kp.secretKey)
+        )
+        signature = private_key.sign(message)  # bytes
+
+    Examples
+    --------
+    Server-side device provisioning:
+
+    >>> kp = generate_key_pair()
+    >>> # kp.secretKey: store on device (32-byte seed, base64)
+    >>> result = pq.ca.issue(
+    ...     subject="device-serial-00123",
+    ...     public_key=kp.publicKey,   # 1952 bytes raw, base64
+    ...     expires_in_seconds=365 * 24 * 60 * 60,
+    ... )
+
+    Raises
+    ------
+    ImportError
+        If ``cryptography`` is not installed or version < 48.0.0.
+    cryptography.exceptions.UnsupportedAlgorithm
+        If the installed cryptography build does not support ML-DSA
+        (requires OpenSSL 3.5+ / AWS-LC / BoringSSL backend).
+    """
+    try:
+        from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65PrivateKey
+    except ImportError:
+        raise ImportError(
+            "generate_key_pair() requires cryptography >= 48.0.0. "
+            "Install with: pip install 'cryptography>=48.0.0'"
+        )
+
+    private_key = MLDSA65PrivateKey.generate()
+    public_key  = private_key.public_key()
+
+    pub_b64  = base64.b64encode(public_key.public_bytes_raw()).decode()
+    seed_b64 = base64.b64encode(private_key.private_bytes_raw()).decode()
+
+    return KeyPairResult(publicKey=pub_b64, secretKey=seed_b64)
+
+
+# ─── CA sub-client ────────────────────────────────────────────────────────────
 
 class CA:
     """
@@ -112,12 +195,16 @@ class CA:
     -----
     pq = PQAuth("pqa_your_key")
 
+    # Generate a key pair for a device (Python server-side)
+    from fipsign.ca import generate_key_pair
+    kp = generate_key_pair()
+
     # Issue a certificate for a device (works for both pqcert and x509 CAs)
     result = pq.ca.issue(
         subject="device-serial-00123",
-        public_key=device_public_key_b64,
+        public_key=kp.publicKey,
         expires_in_seconds=365 * 24 * 60 * 60,
-        meta={"model": "lock-v2", "batch": "2026-05"},
+        meta={"model": "lock-v2", "batch": "2026-05"},  # pqcert only
     )
 
     # pqcert CA: result.certificate is a PQCert dataclass
@@ -162,16 +249,14 @@ class CA:
             Base64-encoded ML-DSA-65 public key of the entity to certify.
             Must be exactly 1952 bytes when decoded (ML-DSA-65 public key size).
 
-            Generate on the device using the JS SDK:
-                const { publicKey, secretKey } = await generateKeyPair()
-
-            Or using pyca/cryptography >= 44.0.0 (see module docstring).
+            Generate using generate_key_pair() from this module, or from
+            the JS SDK: ``const { publicKey, secretKey } = await generateKeyPair()``
         expires_in_seconds : int
             Certificate lifetime in seconds. Required.
             Minimum: 60 (1 minute). Maximum: 157_680_000 (5 years).
         meta : dict, optional
             Up to 10 key-value pairs stored in the certificate (pqcert only).
-            Ignored for x509 CAs.
+            Passing meta to an x509 CA returns a 400 error from the backend.
 
         Returns
         -------
@@ -185,9 +270,10 @@ class CA:
         ------
         PQAuthError(code="API_ERROR", status=400)
             If expires_in_seconds is below 60 or above 157_680_000,
-            or if the public_key is not a valid 1952-byte ML-DSA-65 key.
+            if the public_key is not a valid 1952-byte ML-DSA-65 key,
+            or if meta is passed to an x509 CA.
         PQAuthError(code="API_ERROR", status=404)
-            If no active CA exists for this project. Create one from the dashboard.
+            If no active CA exists for this project.
         PQAuthError(code="API_ERROR", status=429)
             If token quota is exhausted.
 
@@ -196,7 +282,7 @@ class CA:
         >>> # pqcert CA
         >>> result = pq.ca.issue(
         ...     subject="lock-serial-00123",
-        ...     public_key=device_public_key_b64,
+        ...     public_key=kp.publicKey,
         ...     expires_in_seconds=365 * 24 * 60 * 60,
         ...     meta={"model": "lock-v3", "batch": "2026-05"},
         ... )
@@ -206,7 +292,7 @@ class CA:
         >>> # x509 CA
         >>> result = pq.ca.issue(
         ...     subject="device-serial-00123",
-        ...     public_key=device_public_key_b64,
+        ...     public_key=kp.publicKey,
         ...     expires_in_seconds=365 * 24 * 60 * 60,
         ... )
         >>> pem = result.certificate  # str — PEM
@@ -262,7 +348,7 @@ class CA:
         Returns
         -------
         CaRevokeCertResult
-            .certId, .revokedAt, .reason, .usage
+            .certId, .revokedAt, .reason, .usage, .format
 
         Raises
         ------
@@ -292,6 +378,7 @@ class CA:
                 packRemaining  = u["packRemaining"],
                 totalRemaining = u["totalRemaining"],
             ),
+            format = data.get("format"),  # "x509" for X.509 CAs, absent for pqcert
         )
 
     def get_cert(self, cert_id: str) -> CaGetCertResult:
@@ -317,6 +404,8 @@ class CA:
         CaGetCertResult
             .certificate — PQCert (pqcert) or PEM string (x509)
             .status      — revoked, expired, revokedAt, expiresAt
+            .meta        — certId, caId, subject, format, algorithm
+                           (x509 CAs only; None for pqcert)
 
         Raises
         ------
@@ -328,9 +417,25 @@ class CA:
         >>> result = pq.ca.get_cert("cert_...")
         >>> if result.status.revoked:
         ...     raise PermissionError("Certificate revoked")
+        >>>
+        >>> # X.509 CA: access additional metadata
+        >>> if result.meta:
+        ...     print(result.meta.certId)
         """
         data = self._client._request("GET", f"/ca/certificate/{cert_id}")
         s    = data["status"]
+
+        raw_meta = data.get("meta")
+        parsed_meta: Optional[CaGetCertMeta] = None
+        if raw_meta is not None:
+            parsed_meta = CaGetCertMeta(
+                certId    = raw_meta["certId"],
+                caId      = raw_meta["caId"],
+                subject   = raw_meta["subject"],
+                format    = raw_meta["format"],
+                algorithm = raw_meta["algorithm"],
+            )
+
         return CaGetCertResult(
             certificate = _parse_certificate(data["certificate"]),
             status      = CaCertStatus(
@@ -339,6 +444,7 @@ class CA:
                 revokedAt = s.get("revokedAt"),
                 expiresAt = s["expiresAt"],
             ),
+            meta = parsed_meta,
         )
 
     def get_crl(self) -> CaGetCrlResult:
@@ -361,13 +467,13 @@ class CA:
             .generatedAt — Unix timestamp
             .format      — "pqcert" or "x509"
             .raw         — for x509 CAs: the full signed CRL object including
-                           the ML-DSA-65 signature. None for pqcert CAs.
+                           the ML-DSA-65 signature field. None for pqcert CAs.
 
         Notes
         -----
         For x509 CAs, the CRL is signed with ML-DSA-65 by the CA private key.
-        To verify the CRL signature offline, use pyca/cryptography >= 44.0.0
-        with the root CA public key (see module docstring for details).
+        The raw signed object (including ``signature``) is available in
+        ``result.raw`` if you need to verify the CRL signature offline.
 
         CrlEntry.reason may be None if no reason was provided at revocation time.
 
@@ -377,6 +483,10 @@ class CA:
         >>> print(f"{len(result.crl)} revoked certificates")
         >>> for entry in result.crl:
         ...     print(f"{entry.certId} — revoked at {entry.revokedAt}")
+        >>>
+        >>> # X.509 CA: verify CRL signature independently
+        >>> if result.raw:
+        ...     print(result.raw["signature"][:16] + "...")
         """
         data = self._client._request("GET", "/ca/crl")
 
@@ -445,7 +555,7 @@ class CA:
         cert : PQCert | str
             For pqcert CAs: pass the PQCert dataclass (uses PQCert.id).
             For x509 CAs:   pass the certId string (from CaIssueMeta.certId).
-            Also accepts a PQCert for x509 CAs if you have it (uses PQCert.id).
+            Also accepts a certId string for pqcert CAs.
         crl : list[CrlEntry]
             The CRL entries from get_crl().crl.
 
@@ -466,8 +576,8 @@ class CA:
         >>> if pq.ca.is_cert_revoked(result.meta.certId, crl_result.crl):
         ...     raise PermissionError("Device revoked")
 
-        >>> # x509 CA — also works if you pass a PQCert (uses its .id)
-        >>> if pq.ca.is_cert_revoked(device_pqcert, crl_result.crl):
+        >>> # certId string also works for pqcert CAs
+        >>> if pq.ca.is_cert_revoked(result.meta.certId, crl_result.crl):
         ...     raise PermissionError("Device revoked")
         """
         cert_id = cert if isinstance(cert, str) else cert.id

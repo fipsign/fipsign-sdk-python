@@ -17,7 +17,7 @@ class PQAuthError(Exception):
         Human-readable description of the error.
     code : str
         Machine-readable error code. One of:
-            INVALID_API_KEY     — key missing or doesn't start with ``pqa_``
+            INVALID_API_KEY     — key missing or doesn't start with ``pqa_`` followed by 64 hex chars
             API_ERROR           — server returned an error (check ``status``)
             TIMEOUT             — request exceeded the configured timeout
             NETWORK_ERROR       — connection failed

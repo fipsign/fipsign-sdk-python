@@ -69,7 +69,7 @@ class Webhooks:
             body["events"] = events
 
         data = self._client._request("POST", "/webhooks", json=body)
-        wh = data["webhook"]
+        wh   = data["webhook"]
         return WebhookResult(
             webhook=WebhookInfo(
                 url=wh["url"],
@@ -87,13 +87,20 @@ class Webhooks:
         WebhookGetResult
             .webhook is None if no webhook has been registered yet.
             The secret is never returned by get() — only by register().
+            .webhook.active and .webhook.createdAt are populated from the
+            server response.
         """
         data = self._client._request("GET", "/webhooks")
-        wh = data.get("webhook")
+        wh   = data.get("webhook")
         if wh is None:
             return WebhookGetResult(webhook=None)
         return WebhookGetResult(
-            webhook=WebhookInfo(url=wh["url"], events=wh["events"])
+            webhook=WebhookInfo(
+                url=wh["url"],
+                events=wh["events"],
+                active=wh.get("active"),
+                createdAt=wh.get("createdAt"),
+            )
         )
 
     def delete(self) -> dict:

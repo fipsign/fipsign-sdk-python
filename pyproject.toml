@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fipsign-sdk"
-version = "0.8.0"
+version = "0.9.0"
 description = "Post-quantum signing SDK for Python — ML-DSA-65 (NIST FIPS 204)"
 readme = "README.md"
 license = "MIT"
@@ -19,12 +19,14 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Security :: Cryptography",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
 dependencies = [
     "requests>=2.28",
+    "cryptography>=48.0.0",
 ]
 
 [project.optional-dependencies]

@@ -153,9 +153,11 @@ WebhookEvent = Literal[
 
 @dataclass
 class WebhookInfo:
-    url:    str
-    events: List[str]
-    secret: Optional[str] = None  # only present after register(), never in get()
+    url:       str
+    events:    List[str]
+    secret:    Optional[str] = None   # only present after register(), never in get()
+    active:    Optional[bool] = None  # present in get() response
+    createdAt: Optional[int] = None   # present in get() response
 
 
 @dataclass
@@ -174,6 +176,7 @@ class WebhookGetResult:
 class HealthResult:
     status:           str
     algorithm:        str
+    standard:         str   # "NIST FIPS 204"
     quantumResistant: bool
     version:          str
 
@@ -193,8 +196,10 @@ class HealthResult:
 # determined at creation time (dashboard) and cannot be changed afterwards.
 # All CA operations (issue, revoke, get_cert, get_crl) work with both formats.
 #
-# Offline cryptographic operations (generateKeyPair, verifyCert, verifyX509Cert)
-# are NOT available in the Python SDK — see ca.py for details and alternatives.
+# Offline cryptographic operations (verifyCert, verifyX509Cert) are NOT
+# available in the Python SDK — see ca.py for details and alternatives.
+# generate_key_pair() IS available via pyca/cryptography >= 48.0.0 —
+# see ca.py and README for usage and the seed-vs-expanded-key distinction.
 
 CaFormat = Literal["pqcert", "x509"]
 
@@ -309,6 +314,7 @@ class CaRevokeCertResult:
     revokedAt: int
     reason:    Optional[str]
     usage:     CaIssueUsage
+    format:    Optional[str] = None  # "x509" for X.509 CAs, absent for pqcert
 
 
 @dataclass
@@ -317,6 +323,19 @@ class CaCertStatus:
     expired:   bool
     revokedAt: Optional[int]
     expiresAt: int
+
+
+@dataclass
+class CaGetCertMeta:
+    """
+    Additional metadata returned by get_cert() for X.509 CAs.
+    Not present in pqcert CA responses.
+    """
+    certId:    str
+    caId:      str
+    subject:   str
+    format:    str   # "x509"
+    algorithm: str
 
 
 @dataclass
@@ -331,9 +350,13 @@ class CaGetCertResult:
         For x509 CAs: a PEM string.
     status : CaCertStatus
         revoked, expired, revokedAt, expiresAt.
+    meta : CaGetCertMeta | None
+        Additional metadata for X.509 CAs (certId, caId, subject, format,
+        algorithm). None for pqcert CAs.
     """
     certificate: Union[PQCert, str]
     status:      CaCertStatus
+    meta:        Optional[CaGetCertMeta] = None
 
 
 @dataclass
@@ -370,3 +393,40 @@ class CaGetCrlResult:
     generatedAt: int
     format:      str        = "pqcert"
     raw:         Optional[Dict[str, Any]] = None
+
+
+# ─── Key generation ───────────────────────────────────────────────────────────
+
+@dataclass
+class KeyPairResult:
+    """
+    Result of generate_key_pair().
+
+    Attributes
+    ----------
+    publicKey : str
+        Base64-encoded ML-DSA-65 public key (1952 bytes decoded).
+        Compatible with the FIPSign backend and the JS SDK.
+    secretKey : str
+        Base64-encoded ML-DSA-65 key seed (32 bytes decoded).
+
+        **Important:** This is the 32-byte seed form, NOT the 4032-byte
+        expanded key returned by the JS SDK's generateKeyPair().
+        The formats are not interchangeable.
+
+        To sign from Python using this secretKey::
+
+            from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65PrivateKey
+            import base64
+
+            private_key = MLDSA65PrivateKey.from_seed_bytes(
+                base64.b64decode(secret_key)
+            )
+            signature = private_key.sign(message)
+
+        If the device signs using the JS SDK, generate the key pair with
+        generateKeyPair() from the JS SDK instead — the JS secretKey (4032 bytes)
+        is not compatible with the Python secretKey (32-byte seed).
+    """
+    publicKey: str  # base64(1952 bytes)
+    secretKey: str  # base64(32 bytes — seed form, see docstring)

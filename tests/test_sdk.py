@@ -26,8 +26,8 @@ from datetime import datetime
 import requests as _requests
 
 try:
-    from fipsign import PQAuth, PQAuthError
-    from fipsign.types import PQToken, PQCert
+    from fipsign import PQAuth, PQAuthError, generate_key_pair
+    from fipsign.types import PQToken, PQCert, KeyPairResult
 except ImportError:
     print("\033[31mError: fipsign package not found. Install it with: pip install fipsign-sdk\033[0m")
     sys.exit(1)
@@ -49,54 +49,6 @@ if not WEBHOOK_URL or not WEBHOOK_SITE_TOKEN:
     print("  WEBHOOK_URL=https://webhook.site/<your-uuid>")
     print("  WEBHOOK_SITE_TOKEN=<your-uuid>")
     sys.exit(1)
-
-# ─── Valid ML-DSA-65 public key for CA tests ──────────────────────────────────
-# Generated with @noble/post-quantum ml_dsa65.keygen() using a fixed seed.
-# This is a real 1952-byte ML-DSA-65 public key — not a placeholder.
-
-TEST_DEVICE_PUBLIC_KEY = (
-    "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"
-)
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -143,30 +95,70 @@ def run() -> None:
     section("01 · Health check")
     try:
         h = pq.health()
-        if h.status != "ok":           raise AssertionError(f'status is "{h.status}", expected "ok"')
-        if h.algorithm != "ML-DSA-65": raise AssertionError(f'algorithm is "{h.algorithm}", expected "ML-DSA-65"')
-        if not h.quantumResistant:     raise AssertionError("quantumResistant is False")
-        if not h.version:              raise AssertionError("missing version field")
+        if h.status != "ok":              raise AssertionError(f'status is "{h.status}", expected "ok"')
+        if h.algorithm != "ML-DSA-65":   raise AssertionError(f'algorithm is "{h.algorithm}", expected "ML-DSA-65"')
+        if h.standard != "NIST FIPS 204": raise AssertionError(f'standard is "{h.standard}", expected "NIST FIPS 204"')
+        if not h.quantumResistant:        raise AssertionError("quantumResistant is False")
+        if not h.version:                 raise AssertionError("missing version field")
         log("status",           h.status)
         log("algorithm",        h.algorithm)
+        log("standard",         h.standard)
         log("quantumResistant", str(h.quantumResistant))
         log("version",          h.version)
-        pass_test("health() returns correct fields")
+        pass_test("health() returns correct fields including standard")
     except Exception as err:
         fail_test("health()", err)
 
-    # ─── 02 Invalid API key ──────────────────────────────────────────────────
+    # ─── 02 Invalid API key rejection ────────────────────────────────────────
     section("02 · Invalid API key rejection")
+
+    # Wrong prefix
     try:
         PQAuth("bad_key")
-        fail_test("constructor rejects bad key", "should have raised")
+        fail_test("constructor rejects wrong prefix", "should have raised")
     except PQAuthError as err:
         if err.code == "INVALID_API_KEY":
-            pass_test("constructor raises PQAuthError(INVALID_API_KEY) for bad key")
+            pass_test("constructor raises INVALID_API_KEY for wrong prefix")
         else:
-            fail_test("constructor rejects bad key", err)
+            fail_test("constructor rejects wrong prefix", err)
     except Exception as err:
-        fail_test("constructor rejects bad key", err)
+        fail_test("constructor rejects wrong prefix", err)
+
+    # pqa_ prefix only, no content
+    try:
+        PQAuth("pqa_")
+        fail_test("constructor rejects pqa_ with no content", "should have raised")
+    except PQAuthError as err:
+        if err.code == "INVALID_API_KEY":
+            pass_test("constructor raises INVALID_API_KEY for pqa_ with no content")
+        else:
+            fail_test("constructor rejects pqa_ with no content", err)
+    except Exception as err:
+        fail_test("constructor rejects pqa_ with no content", err)
+
+    # pqa_ + too short (not 64 chars)
+    try:
+        PQAuth("pqa_abc123")
+        fail_test("constructor rejects pqa_ + too short", "should have raised")
+    except PQAuthError as err:
+        if err.code == "INVALID_API_KEY":
+            pass_test("constructor raises INVALID_API_KEY for pqa_ + too short")
+        else:
+            fail_test("constructor rejects pqa_ + too short", err)
+    except Exception as err:
+        fail_test("constructor rejects pqa_ + too short", err)
+
+    # pqa_ + 64 non-hex chars (uppercase)
+    try:
+        PQAuth("pqa_" + "Z" * 64)
+        fail_test("constructor rejects pqa_ + non-hex chars", "should have raised")
+    except PQAuthError as err:
+        if err.code == "INVALID_API_KEY":
+            pass_test("constructor raises INVALID_API_KEY for pqa_ + non-hex chars")
+        else:
+            fail_test("constructor rejects pqa_ + non-hex chars", err)
+    except Exception as err:
+        fail_test("constructor rejects pqa_ + non-hex chars", err)
 
     # ─── 03 sign() ───────────────────────────────────────────────────────────
     section("03 · sign()")
@@ -428,7 +420,7 @@ def run() -> None:
         fail_test("verify() unknown algorithm", err)
 
     # ─── 10 Webhooks ─────────────────────────────────────────────────────────
-    section("10 · webhooks — get before register, register, get, test, delete")
+    section("10 · webhooks — get before register, register, secret preservation, get, test, delete")
 
     try:
         try:
@@ -443,6 +435,7 @@ def run() -> None:
     except Exception as err:
         fail_test("webhooks.get() before register", err)
 
+    webhook_secret = None
     try:
         result = pq.webhooks.register(
             url=WEBHOOK_URL,
@@ -451,12 +444,33 @@ def run() -> None:
         if not result.webhook.url:    raise AssertionError("missing webhook.url")
         if not result.webhook.secret: raise AssertionError("missing webhook.secret")
         if not result.webhook.events: raise AssertionError("events is empty")
+        webhook_secret = result.webhook.secret
         log("url",    result.webhook.url)
         log("events", ", ".join(result.webhook.events))
         log("secret", result.webhook.secret[:8] + "...")
         pass_test("webhooks.register() — webhook created with secret")
     except Exception as err:
         fail_test("webhooks.register()", err)
+
+    # Re-register must preserve the original secret
+    if webhook_secret:
+        try:
+            result2 = pq.webhooks.register(
+                url=WEBHOOK_URL,
+                events=["token.signed", "token.revoked"],
+            )
+            if not result2.webhook.secret:
+                raise AssertionError("missing webhook.secret on re-register")
+            if result2.webhook.secret != webhook_secret:
+                raise AssertionError(
+                    f"secret changed on re-register — expected same secret\n"
+                    f"  before: {webhook_secret[:8]}...\n"
+                    f"  after:  {result2.webhook.secret[:8]}..."
+                )
+            log("secret preserved", result2.webhook.secret[:8] + "...")
+            pass_test("webhooks.register() re-register — secret preserved, events updated")
+        except Exception as err:
+            fail_test("webhooks.register() re-register secret preservation", err)
 
     try:
         result = pq.webhooks.get()
@@ -557,35 +571,170 @@ def run() -> None:
     except Exception as err:
         fail_test("webhook delivery confirmation", err)
 
-    # ─── 13 Certificate Authority ─────────────────────────────────────────────
-    section("13 · Certificate Authority")
+    # ─── 13 generate_key_pair() ──────────────────────────────────────────────
+    section("13 · generate_key_pair()")
+    generated_public_key = None
+    try:
+        kp = generate_key_pair()
+        if not isinstance(kp, KeyPairResult):
+            raise AssertionError(f"expected KeyPairResult, got {type(kp)}")
+        if not kp.publicKey:
+            raise AssertionError("missing publicKey")
+        if not kp.secretKey:
+            raise AssertionError("missing secretKey")
 
-    # The backend supports two CA formats:
-    #   pqcert — native JSON format, result.certificate is a PQCert dataclass
-    #   x509   — standard X.509 PEM, result.certificate is a str
-    # We detect the format from the returned certificate and run the same
-    # assertions for both, using format-appropriate field access.
+        import base64
+        pub_bytes  = base64.b64decode(kp.publicKey)
+        seed_bytes = base64.b64decode(kp.secretKey)
 
-    # 13.1 ca.issue() — happy path
-    issued_cert    = None   # PQCert | str
-    issued_cert_id = None   # str — works for both formats
+        # publicKey must be exactly 1952 bytes (ML-DSA-65 raw public key)
+        if len(pub_bytes) != 1952:
+            raise AssertionError(f"publicKey decoded to {len(pub_bytes)} bytes, expected 1952")
+
+        # secretKey must be exactly 32 bytes (seed form — intentionally NOT 4032)
+        # This is different from the JS SDK which returns the 4032-byte expanded key.
+        # The Python SDK returns the seed because pyca/cryptography exposes only the seed form.
+        # To sign from Python: MLDSA65PrivateKey.from_seed_bytes(base64.b64decode(secret_key))
+        if len(seed_bytes) != 32:
+            raise AssertionError(
+                f"secretKey decoded to {len(seed_bytes)} bytes, expected 32 (seed form). "
+                f"Note: this is intentionally different from the JS SDK's 4032-byte expanded key."
+            )
+
+        log("publicKey bytes",  f"{len(pub_bytes)} ✓ (ML-DSA-65 raw public key)")
+        log("secretKey bytes",  f"{len(seed_bytes)} ✓ (seed form — not the 4032-byte expanded key)")
+        log("publicKey b64",    kp.publicKey[:24] + "...")
+        log("secretKey b64",    kp.secretKey[:24] + "...")
+
+        generated_public_key = kp.publicKey
+        pass_test("generate_key_pair() — correct key sizes: publicKey=1952B, secretKey=32B (seed)")
+    except Exception as err:
+        fail_test("generate_key_pair()", err)
+
+    # Verify the generated public key can be used in signing from Python
+    try:
+        if generated_public_key is None:
+            raise AssertionError("skipped — generate_key_pair() failed")
+        import base64
+        from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65PrivateKey
+
+        # Regenerate from the same seed to check sign/verify roundtrip
+        kp2         = generate_key_pair()
+        seed_bytes2 = base64.b64decode(kp2.secretKey)
+        private_key = MLDSA65PrivateKey.from_seed_bytes(seed_bytes2)
+
+        msg       = b"test message for fipsign python sdk"
+        signature = private_key.sign(msg)
+        public_key = private_key.public_key()
+        public_key.verify(signature, msg)  # raises InvalidSignature on failure
+
+        if len(signature) != 3309:
+            raise AssertionError(f"signature is {len(signature)} bytes, expected 3309")
+
+        log("sign/verify roundtrip", "OK ✓")
+        log("signature bytes",       f"{len(signature)} ✓ (ML-DSA-65)")
+        pass_test("generate_key_pair() — secretKey sign/verify roundtrip via MLDSA65PrivateKey.from_seed_bytes()")
+    except ImportError:
+        # cryptography >= 48.0.0 may not be available in all test environments
+        print(f"  {DIM}  → sign/verify roundtrip skipped (cryptography < 48.0.0){RESET}")
+    except Exception as err:
+        fail_test("generate_key_pair() sign/verify roundtrip", err)
+
+    # ─── 14 Certificate Authority ─────────────────────────────────────────────
+    section("14 · Certificate Authority")
+
+    # Use a key pair generated by generate_key_pair() if available,
+    # otherwise fall back to the hardcoded JS-generated public key.
+    # This exercises the end-to-end flow: generate → issue → revoke.
+    if generated_public_key:
+        device_public_key = generated_public_key
+        log("key source", "generate_key_pair() — Python-native ML-DSA-65")
+    else:
+        # Hardcoded ML-DSA-65 public key (1952 bytes) generated by JS SDK for CI fallback
+        device_public_key = (
+            "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"
+        )
+        log("key source", "hardcoded JS-generated public key (fallback)")
+
+    # 14.1 ca.issue() — happy path
+    issued_cert    = None
+    issued_cert_id = None
     is_x509        = False
 
     try:
-        r = pq.ca.issue(
-            subject=f"device-test-{int(time.time() * 1000)}",
-            public_key=TEST_DEVICE_PUBLIC_KEY,
-            expires_in_seconds=86400,
-            meta={"env": "test", "sdk": "fipsign-sdk-python"},
-        )
+        subject = f"device-test-{int(time.time() * 1000)}"
+
+        try:
+            # Attempt with meta — works for PQCert, rejected for X.509
+            r = pq.ca.issue(
+                subject=subject,
+                public_key=device_public_key,
+                expires_in_seconds=86400,
+                meta={"env": "test", "sdk": "fipsign-sdk-python"},
+            )
+            is_x509 = False
+            log("meta", "accepted → PQCert CA detected")
+        except PQAuthError as meta_err:
+            if (meta_err.code == "API_ERROR"
+                    and meta_err.status == 400
+                    and "meta" in (meta_err.message or "").lower()):
+                # X.509 CA rejects meta — expected behavior, retry without it
+                log("meta", "rejected with 400 → X.509 CA detected (expected)")
+                pass_test("ca.issue() — X.509 CA correctly rejects meta with 400")
+                r = pq.ca.issue(
+                    subject=subject,
+                    public_key=device_public_key,
+                    expires_in_seconds=86400,
+                )
+                is_x509 = True
+            else:
+                raise
+
         if not r.certificate:                          raise AssertionError("missing certificate")
         if not r.meta.certId:                          raise AssertionError("missing meta.certId")
         if not isinstance(r.usage.freeRemaining, int): raise AssertionError("missing usage.freeRemaining")
 
-        is_x509 = isinstance(r.certificate, str)
-
         if is_x509:
-            # X.509 — certificate is a PEM string, details come from meta
             if "BEGIN CERTIFICATE" not in r.certificate:
                 raise AssertionError("x509 certificate is not a valid PEM string")
             if not r.meta.caId:      raise AssertionError("missing meta.caId")
@@ -596,7 +745,6 @@ def run() -> None:
             log("expiresAt",  str(r.meta.expiresAt))
             log("pem length", f"{len(r.certificate)} chars")
         else:
-            # PQCert — certificate is a PQCert dataclass
             if r.certificate.type != "CA_CERT":  raise AssertionError(f"expected CA_CERT, got {r.certificate.type}")
             if not r.certificate.id:             raise AssertionError("missing certificate.id")
             if not r.certificate.signature:      raise AssertionError("missing certificate.signature")
@@ -615,11 +763,11 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.issue()", err)
 
-    # 13.2 ca.issue() — expires_in_seconds below minimum (< 60)
+    # 14.2 ca.issue() — expires_in_seconds below minimum (< 60)
     try:
         pq.ca.issue(
             subject="device-expire-min-test",
-            public_key=TEST_DEVICE_PUBLIC_KEY,
+            public_key=device_public_key,
             expires_in_seconds=30,
         )
         fail_test("ca.issue() rejects expires_in_seconds < 60", "should have raised")
@@ -632,11 +780,11 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.issue() rejects expires_in_seconds < 60", err)
 
-    # 13.3 ca.issue() — expires_in_seconds above maximum (> 5 years)
+    # 14.3 ca.issue() — expires_in_seconds above maximum (> 5 years)
     try:
         pq.ca.issue(
             subject="device-expire-max-test",
-            public_key=TEST_DEVICE_PUBLIC_KEY,
+            public_key=device_public_key,
             expires_in_seconds=200_000_000,
         )
         fail_test("ca.issue() rejects expires_in_seconds > 5 years", "should have raised")
@@ -649,9 +797,7 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.issue() rejects expires_in_seconds > 5 years", err)
 
-    # 13.4 ca.get_crl() — before revocation
-    # PQCert: CaGetCrlResult.crl is List[CrlEntry], caId/subject at root
-    # X.509:  same — the SDK normalizes both into the same CaGetCrlResult shape
+    # 14.4 ca.get_crl() — before revocation
     crl_before = None
     try:
         r = pq.ca.get_crl()
@@ -664,13 +810,19 @@ def run() -> None:
         log("subject",     r.subject)
         log("format",      r.format)
         log("crl entries", str(len(r.crl)))
+        # x509 CAs: raw must be present and include signature
+        if r.format == "x509":
+            if r.raw is None:
+                raise AssertionError("x509 CRL: raw should not be None")
+            if not r.raw.get("signature"):
+                raise AssertionError("x509 CRL: raw.signature is missing")
+            log("raw.signature", r.raw["signature"][:16] + "...")
         crl_before = r.crl
-        pass_test("ca.get_crl() — CRL returned with correct shape")
+        pass_test("ca.get_crl() — CRL returned with correct shape" + (" (incl. raw.signature for x509)" if r.format == "x509" else ""))
     except Exception as err:
         fail_test("ca.get_crl()", err)
 
-    # 13.5 ca.is_cert_revoked() — before revocation
-    # Use issued_cert_id (str) — works for both pqcert and x509 formats.
+    # 14.5 ca.is_cert_revoked() — before revocation (certId string)
     try:
         if issued_cert_id is None or crl_before is None:
             raise AssertionError("skipped — previous steps failed")
@@ -682,7 +834,7 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.is_cert_revoked() before revocation", err)
 
-    # 13.5b ca.is_cert_revoked() with PQCert object (pqcert format only)
+    # 14.5b ca.is_cert_revoked() with PQCert object (pqcert format only)
     if not is_x509 and issued_cert is not None and crl_before is not None:
         try:
             revoked = pq.ca.is_cert_revoked(issued_cert, crl_before)
@@ -692,7 +844,7 @@ def run() -> None:
         except Exception as err:
             fail_test("ca.is_cert_revoked() with PQCert object before revocation", err)
 
-    # 13.6 ca.get_cert() — existing cert
+    # 14.6 ca.get_cert() — existing cert
     try:
         if not issued_cert_id: raise AssertionError("skipped — ca.issue() failed")
         r = pq.ca.get_cert(issued_cert_id)
@@ -701,20 +853,32 @@ def run() -> None:
         if r.status.revoked:               raise AssertionError("cert should not be revoked yet")
         if r.status.expired:               raise AssertionError("cert should not be expired")
         if r.status.revokedAt is not None: raise AssertionError("revokedAt should be None")
-        # Format-appropriate logging
         if isinstance(r.certificate, str):
             log("format",  "x509")
             log("pem",     r.certificate[:27] + "...")
+            # x509: meta should be present
+            if r.meta is None:
+                raise AssertionError("x509 get_cert(): meta should not be None")
+            if not r.meta.certId:    raise AssertionError("meta.certId missing")
+            if not r.meta.caId:      raise AssertionError("meta.caId missing")
+            if not r.meta.subject:   raise AssertionError("meta.subject missing")
+            if not r.meta.format:    raise AssertionError("meta.format missing")
+            if not r.meta.algorithm: raise AssertionError("meta.algorithm missing")
+            log("meta.certId",    r.meta.certId)
+            log("meta.format",    r.meta.format)
         else:
             log("format",  "pqcert")
             log("certId",  r.certificate.id)
+            # pqcert: meta should be None
+            if r.meta is not None:
+                raise AssertionError("pqcert get_cert(): meta should be None")
         log("revoked", str(r.status.revoked))
         log("expired", str(r.status.expired))
-        pass_test("ca.get_cert() — certificate retrieved with correct status")
+        pass_test("ca.get_cert() — certificate retrieved with correct status and meta")
     except Exception as err:
         fail_test("ca.get_cert()", err)
 
-    # 13.7 ca.get_cert() — non-existent certId returns 404
+    # 14.7 ca.get_cert() — non-existent certId returns 404
     try:
         pq.ca.get_cert("cert_nonexistent_000000000000000000000000")
         fail_test("ca.get_cert() non-existent certId — should have raised", "did not raise")
@@ -727,7 +891,7 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.get_cert() non-existent certId", err)
 
-    # 13.8 ca.revoke_cert()
+    # 14.8 ca.revoke_cert()
     try:
         if not issued_cert_id: raise AssertionError("skipped — ca.issue() failed")
         r = pq.ca.revoke_cert(issued_cert_id, "python sdk integration test")
@@ -735,6 +899,11 @@ def run() -> None:
         if not r.revokedAt:                        raise AssertionError("missing revokedAt")
         if r.reason != "python sdk integration test": raise AssertionError(f"wrong reason: {r.reason}")
         if not isinstance(r.usage.freeRemaining, int): raise AssertionError("missing usage")
+        # x509 CAs include format in revoke response
+        if is_x509:
+            if r.format != "x509":
+                raise AssertionError(f"x509 revoke_cert(): expected format='x509', got {r.format!r}")
+            log("format", r.format)
         log("certId",    r.certId)
         log("revokedAt", str(r.revokedAt))
         log("reason",    r.reason)
@@ -742,7 +911,7 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.revoke_cert()", err)
 
-    # 13.9 ca.revoke_cert() — already revoked should return 409
+    # 14.9 ca.revoke_cert() — already revoked should return 409
     try:
         if not issued_cert_id: raise AssertionError("skipped — ca.issue() failed")
         pq.ca.revoke_cert(issued_cert_id, "duplicate revocation")
@@ -755,13 +924,16 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.revoke_cert() duplicate", err)
 
-    # 13.10 ca.get_crl() — after revocation
+    # 14.10 ca.get_crl() — after revocation
     crl_after = None
     try:
         r = pq.ca.get_crl()
         if not isinstance(r.crl, list): raise AssertionError("crl is not a list")
+        # x509: raw.signature must still be present
+        if r.format == "x509":
+            if r.raw is None or not r.raw.get("signature"):
+                raise AssertionError("x509 CRL after revocation: raw.signature missing")
         crl_after = r.crl
-        # Verify reason field for the revoked cert — may be None if no reason was given
         entry = next((e for e in r.crl if e.certId == issued_cert_id), None)
         if entry:
             reason_is_valid = entry.reason is None or isinstance(entry.reason, str)
@@ -773,7 +945,7 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.get_crl() after revocation", err)
 
-    # 13.11 ca.is_cert_revoked() — after revocation, using certId string
+    # 14.11 ca.is_cert_revoked() — after revocation, using certId string
     try:
         if issued_cert_id is None or crl_after is None:
             raise AssertionError("skipped — previous steps failed")
@@ -785,7 +957,7 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.is_cert_revoked() after revocation", err)
 
-    # 13.11b ca.is_cert_revoked() with PQCert object after revocation (pqcert only)
+    # 14.11b ca.is_cert_revoked() with PQCert object after revocation (pqcert only)
     if not is_x509 and issued_cert is not None and crl_after is not None:
         try:
             revoked = pq.ca.is_cert_revoked(issued_cert, crl_after)
@@ -795,7 +967,7 @@ def run() -> None:
         except Exception as err:
             fail_test("ca.is_cert_revoked() with PQCert object after revocation", err)
 
-    # 13.12 ca.get_cert() — status after revocation
+    # 14.12 ca.get_cert() — status after revocation
     try:
         if not issued_cert_id: raise AssertionError("skipped — ca.issue() failed")
         r = pq.ca.get_cert(issued_cert_id)

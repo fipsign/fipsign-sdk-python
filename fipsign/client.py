@@ -8,7 +8,7 @@ For async usage see the async_client module (httpx-based).
 
 from __future__ import annotations
 
-import json
+import re
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -28,6 +28,7 @@ from .types import (
     UsageResult,
     VerifyResult,
     WebhookGetResult,
+    WebhookInfo,
     WebhookResult,
 )
 from .webhooks import Webhooks
@@ -35,6 +36,10 @@ from .ca import CA
 
 DEFAULT_BASE_URL = "https://api.fipsign.dev"
 DEFAULT_TIMEOUT = 10  # seconds
+
+# API keys must be "pqa_" followed by exactly 64 lowercase hex characters.
+# Mirrors the validation in the JS SDK: /^pqa_[0-9a-f]{64}$/
+_API_KEY_RE = re.compile(r"^pqa_[0-9a-f]{64}$")
 
 
 class PQAuth:
@@ -44,7 +49,9 @@ class PQAuth:
     Parameters
     ----------
     api_key : str
-        Your FIPSign API key. Must start with ``pqa_``.
+        Your FIPSign API key. Must match ``pqa_`` followed by 64 lowercase
+        hex characters. Constructor raises ``INVALID_API_KEY`` immediately
+        if the key does not match this format.
         Get one at https://app.fipsign.dev
     base_url : str, optional
         Override the API base URL (useful for self-hosted instances).
@@ -57,7 +64,8 @@ class PQAuth:
     Raises
     ------
     PQAuthError(code="INVALID_API_KEY")
-        Raised immediately in the constructor if the key doesn't start with ``pqa_``.
+        Raised immediately in the constructor if the key doesn't match
+        ``pqa_`` + 64 lowercase hex characters.
 
     Examples
     --------
@@ -82,10 +90,10 @@ class PQAuth:
         timeout: float = DEFAULT_TIMEOUT,
         session: Optional[requests.Session] = None,
     ) -> None:
-        if not api_key or not api_key.startswith("pqa_"):
+        if not api_key or not _API_KEY_RE.match(api_key):
             raise PQAuthError(
-                'Invalid API key — keys must start with "pqa_". '
-                "Get one at https://app.fipsign.dev",
+                'Invalid API key — keys must be "pqa_" followed by 64 lowercase hex '
+                "characters. Get one at https://app.fipsign.dev",
                 "INVALID_API_KEY",
             )
         self._api_key = api_key
@@ -336,7 +344,7 @@ class PQAuth:
         -------
         UsageResult
             .current        — month, freeUsed, freeRemaining, freeLimit, packRemaining, totalRemaining
-            .monthly_history — list of 6 MonthlyEntry (oldest → newest)
+            .monthlyHistory — list of 6 MonthlyEntry (oldest → newest)
             .packs          — list of PackEntry for purchased packs
             .developer      — {"email": "..."}
             .note           — informational string
@@ -345,7 +353,7 @@ class PQAuth:
         --------
         >>> u = pq.usage()
         >>> print(f"{u.current.freeRemaining} / {u.current.freeLimit} free tokens remaining")
-        >>> for entry in u.monthly_history:
+        >>> for entry in u.monthlyHistory:
         ...     print(f"{entry.month}: {entry.tokensUsed} used")
         """
         data = self._request("GET", "/usage")
@@ -419,12 +427,14 @@ class PQAuth:
         Returns
         -------
         HealthResult
-            .status ("ok"), .algorithm ("ML-DSA-65"), .quantumResistant (True), .version
+            .status ("ok"), .algorithm ("ML-DSA-65"), .standard ("NIST FIPS 204"),
+            .quantumResistant (True), .version
 
         Examples
         --------
         >>> h = pq.health()
         >>> assert h.status == "ok"
+        >>> assert h.standard == "NIST FIPS 204"
         """
         try:
             resp = self._session.get(
@@ -440,6 +450,7 @@ class PQAuth:
         return HealthResult(
             status=data.get("status", ""),
             algorithm=data.get("algorithm", ""),
+            standard=data.get("standard", ""),
             quantumResistant=data.get("quantumResistant", False),
             version=data.get("version", ""),
         )

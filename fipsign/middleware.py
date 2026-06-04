@@ -29,7 +29,11 @@ def profile(user=Depends(require_auth)):
 
 from __future__ import annotations
 
+import base64
 import functools
+import hashlib
+import hmac
+import json as _json
 from typing import Any, Callable, Optional
 
 from .client import PQAuth
@@ -80,13 +84,11 @@ def flask_middleware(pq: PQAuth) -> Callable:
                     jsonify({"error": "Authorization header required (Bearer <token>)"}),
                     401,
                 )
-            import base64
-            import json as _json
 
             try:
-                raw = base64.b64decode(auth_header[7:]).decode("utf-8")
+                raw        = base64.b64decode(auth_header[7:]).decode("utf-8")
                 token_data = _json.loads(raw)
-                token = PQToken.from_dict(token_data)
+                token      = PQToken.from_dict(token_data)
             except Exception:
                 return jsonify({"error": "Invalid token format"}), 401
 
@@ -119,7 +121,7 @@ def fastapi_middleware(pq: PQAuth) -> Callable:
     Returns
     -------
     Callable
-        A FastAPI dependency callable.
+        A FastAPI dependency callable, ready to use with ``Depends()``.
 
     Examples
     --------
@@ -130,7 +132,7 @@ def fastapi_middleware(pq: PQAuth) -> Callable:
     ...     return {"sub": user["sub"], "role": user.get("role")}
     """
     try:
-        from fastapi import Header, HTTPException
+        from fastapi import Depends, HTTPException
         from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
     except ImportError:
         raise ImportError(
@@ -139,21 +141,16 @@ def fastapi_middleware(pq: PQAuth) -> Callable:
 
     security = HTTPBearer(auto_error=False)
 
-    def verify_token(
-        credentials: Optional[Any] = None,
+    def dependency(
+        credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     ) -> dict:
-        import base64
-        import json as _json
-        from fastapi import Depends, HTTPException
-        from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-
         if credentials is None or not credentials.credentials:
             raise HTTPException(status_code=401, detail="Authorization header required")
 
         try:
-            raw = base64.b64decode(credentials.credentials).decode("utf-8")
+            raw        = base64.b64decode(credentials.credentials).decode("utf-8")
             token_data = _json.loads(raw)
-            token = PQToken.from_dict(token_data)
+            token      = PQToken.from_dict(token_data)
         except Exception:
             raise HTTPException(status_code=401, detail="Invalid token format")
 
@@ -162,11 +159,6 @@ def fastapi_middleware(pq: PQAuth) -> Callable:
             raise HTTPException(status_code=401, detail=result.error or "Invalid token")
 
         return result.payload
-
-    def dependency(
-        credentials: Optional[Any] = __import__("fastapi", fromlist=["Depends"]).Depends(security),
-    ) -> dict:
-        return verify_token(credentials)
 
     return dependency
 
@@ -218,9 +210,6 @@ def verify_webhook_signature(
     ...     event = await request.json()
     ...     ...
     """
-    import hashlib
-    import hmac
-
     if not signature_header.startswith("sha256="):
         return False
 
