@@ -395,6 +395,31 @@ class CaGetCrlResult:
     raw:         Optional[Dict[str, Any]] = None
 
 
+@dataclass
+class VerifyCertResult:
+    """
+    Result of ca.verify_cert().
+
+    Attributes
+    ----------
+    valid : bool
+        True if the certificate signature is valid and the certificate has not expired.
+        Does NOT check revocation — call is_cert_revoked() for that.
+    cert : PQCert | None
+        The verified PQCert dataclass. None when valid=False.
+    error : str | None
+        Human-readable error message when valid=False. One of:
+            'Expected a CA_CERT certificate'
+            'Expected a CA_ROOT certificate'
+            'Certificate was not issued by this CA (caId mismatch)'
+            'Certificate has expired'
+            'Invalid certificate signature'
+    """
+    valid: bool
+    cert:  Optional[PQCert] = None
+    error: Optional[str]    = None
+
+
 # ─── Key generation ───────────────────────────────────────────────────────────
 
 @dataclass

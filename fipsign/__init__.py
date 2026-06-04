@@ -43,6 +43,7 @@ from .types import (
     CaRevokeCertResult,
     CaGetCertResult, CaGetCertMeta, CaCertStatus,
     CaGetCrlResult, CrlEntry,
+    VerifyCertResult,
 )
 
 __all__ = [
@@ -74,6 +75,7 @@ __all__ = [
     "CaRevokeCertResult",
     "CaGetCertResult", "CaGetCertMeta", "CaCertStatus",
     "CaGetCrlResult", "CrlEntry",
+    "VerifyCertResult",
 ]
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"

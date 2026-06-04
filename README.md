@@ -489,18 +489,38 @@ print(result.meta.format)         # "x509"
 
 ---
 
-### ca.verify_cert() — Offline certificate verification
+### ca.verify_cert() — Offline certificate verification (PQCert)
 
-> **Not available in the Python SDK.** Offline verification requires ML-DSA-65 local cryptography over FIPSign's PQCert JSON format.
->
-> **For PQCert CAs**, use the JavaScript SDK:
-> ```javascript
-> import rootCert from './root-cert.json' assert { type: 'json' }
-> const result = fipsign.ca.verifyCert(deviceCert, rootCert)
-> if (!result.valid) return reject(result.error)
-> ```
->
-> **For X.509 CAs**, use `pyca/cryptography >= 44.0.0` directly:
+Verify a PQCert certificate entirely in memory using the CA root certificate. No API call — uses ML-DSA-65 locally via pyca/cryptography (included as a dependency). Does not check revocation.
+
+**Never raises.** Returns a `VerifyCertResult` with `valid=False` and an `error` message on any failure.
+
+This method is for **PQCert format only**. For X.509 certificates use pyca/cryptography directly (see the X.509 lifecycle example below).
+
+```python
+import json
+from fipsign.types import PQCert
+
+# Load the root cert saved at CA creation time
+with open("root-cert.json") as f:
+    root_cert = PQCert.from_dict(json.load(f))
+
+result = pq.ca.verify_cert(device_cert, root_cert)
+
+if not result.valid:
+    # Possible error messages:
+    #   'Expected a CA_CERT certificate'
+    #   'Expected a CA_ROOT certificate'
+    #   'Certificate was not issued by this CA (caId mismatch)'
+    #   'Certificate has expired'
+    #   'Invalid certificate signature'
+    raise PermissionError(result.error)
+
+print(result.cert.subject)   # "device-serial-00123"
+print(result.cert.expiresAt) # Unix timestamp
+```
+
+> **For X.509 CAs**, use pyca/cryptography directly (included as a dependency):
 > ```python
 > from cryptography import x509
 > from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65
@@ -513,7 +533,9 @@ print(result.meta.format)         # "x509"
 > root_pub.verify(leaf_cert.signature, leaf_cert.tbs_certificate_bytes, MLDSA65())
 > ```
 >
-> **For real-time server-side status checks**, use `ca.get_cert()` from Python — it returns the live revocation status without needing the root certificate.
+> **For real-time server-side status checks**, use `ca.get_cert()` — it returns the live revocation status without needing the root certificate.
+
+> **Note on `meta`:** The `meta` field is included in the certificate but its contents are **not part of the signed canonical message** — this mirrors the JavaScript `JSON.stringify` behavior where nested object keys are excluded by the replacer array. Verification always succeeds regardless of `meta` content. To validate `meta` integrity, use `ca.get_cert()` which returns the server-authoritative record.
 
 ---
 
@@ -611,9 +633,15 @@ pq.ca.revoke_cert("cert_...", "device decommissioned")
 ### Full device lifecycle — PQCert
 
 ```python
+import json
 from fipsign import PQAuth, generate_key_pair
+from fipsign.types import PQCert
 
 pq = PQAuth("pqa_your_api_key")
+
+# root_cert — the PQCert JSON saved once at CA creation, stored securely
+with open("root-cert.json") as f:
+    root_cert = PQCert.from_dict(json.load(f))
 
 # 1. Factory: generate key pair for the device
 kp = generate_key_pair()
@@ -629,10 +657,10 @@ result = pq.ca.issue(
 )
 certificate = result.certificate   # PQCert dataclass — store on device
 
-# 3. At runtime: real-time revocation check (single cert, server-side)
-status = pq.ca.get_cert(certificate.id)
-if status.status.revoked:
-    raise PermissionError("Device revoked")
+# 3. At runtime: offline signature verification (no API call)
+result = pq.ca.verify_cert(certificate, root_cert)
+if not result.valid:
+    raise PermissionError(result.error)
 
 # 4. At runtime: bulk revocation check (offline, from cached CRL)
 crl_result = pq.ca.get_crl()
@@ -775,12 +803,28 @@ JWT with RS256/ES256 and standard OAuth tokens use ECDSA or RSA — both vulnera
 
 ## Integration tests
 
+**PQCert CA — 47 tests:**
 ```bash
 FIPSIGN_API_KEY=pqa_your_key \
 WEBHOOK_URL=https://webhook.site/your-uuid \
 WEBHOOK_SITE_TOKEN=your-uuid \
 python tests/test_sdk.py
 ```
+
+**PQCert CA — 51 tests (includes offline `ca.verify_cert()`):**
+```bash
+FIPSIGN_API_KEY=pqa_your_key WEBHOOK_URL=https://webhook.site/your-uuid WEBHOOK_SITE_TOKEN=your-uuid FIPSIGN_ROOT_CERT_JSON="$(cat root-cert.json)" python tests/test_sdk.py
+```
+
+**X.509 CA — 46 tests:**
+```bash
+FIPSIGN_API_KEY=pqa_your_x509_key \
+WEBHOOK_URL=https://webhook.site/your-uuid \
+WEBHOOK_SITE_TOKEN=your-uuid \
+python tests/test_sdk.py
+```
+
+> `FIPSIGN_ROOT_CERT_JSON` is the JSON content of the root certificate shown once at CA creation time. Save it securely — it cannot be recovered from the dashboard.
 
 ---
 

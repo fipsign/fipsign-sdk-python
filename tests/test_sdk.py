@@ -797,7 +797,92 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.issue() rejects expires_in_seconds > 5 years", err)
 
-    # 14.4 ca.get_crl() — before revocation
+    # 14.4 ca.verify_cert() — offline verification (PQCert only)
+    # Requires FIPSIGN_ROOT_CERT_JSON env var (the JSON file saved at CA creation).
+    # Skipped for X.509 CAs — use pyca/cryptography directly for X.509 offline verify.
+    ROOT_CERT_JSON_STR = os.environ.get("FIPSIGN_ROOT_CERT_JSON")
+
+    if not ROOT_CERT_JSON_STR:
+        print(f"  {DIM}ℹ FIPSIGN_ROOT_CERT_JSON not set — ca.verify_cert() tests skipped.{RESET}")
+        print(f"  {DIM}  To enable: FIPSIGN_ROOT_CERT_JSON='$(cat root-cert.json)' python tests/test_sdk.py{RESET}")
+    elif is_x509:
+        print(f"  {DIM}ℹ ca.verify_cert() tests skipped — X.509 CA detected (PQCert only).{RESET}")
+        print(f"  {DIM}  For X.509 offline verify use pyca/cryptography directly (see README).{RESET}")
+    else:
+        # 14.4a — valid certificate verifies correctly
+        try:
+            if issued_cert is None:
+                raise AssertionError("skipped — ca.issue() failed")
+            root_cert_dict = json.loads(ROOT_CERT_JSON_STR)
+            from fipsign.types import PQCert as _PQCert
+            root_cert = _PQCert.from_dict(root_cert_dict)
+            result = pq.ca.verify_cert(issued_cert, root_cert)
+            if not result.valid:
+                raise AssertionError(f"verify_cert returned invalid: {result.error}")
+            if result.cert is None:
+                raise AssertionError("result.cert should not be None when valid=True")
+            if result.cert.subject != issued_cert.subject:
+                raise AssertionError(f"result.cert.subject mismatch: {result.cert.subject}")
+            log("valid",   str(result.valid))
+            log("subject", result.cert.subject)
+            pass_test("ca.verify_cert() — valid certificate verified offline against root cert")
+        except Exception as err:
+            fail_test("ca.verify_cert() valid cert", err)
+
+        # 14.4b — tampered certificate is rejected
+        try:
+            if issued_cert is None:
+                raise AssertionError("skipped — ca.issue() failed")
+            import dataclasses
+            tampered = dataclasses.replace(issued_cert, subject="TAMPERED-SUBJECT")
+            result = pq.ca.verify_cert(tampered, root_cert)
+            if result.valid:
+                raise AssertionError("tampered cert should be invalid")
+            if not result.error:
+                raise AssertionError("missing error message")
+            log("valid", str(result.valid))
+            log("error", result.error)
+            pass_test("ca.verify_cert() — tampered certificate correctly rejected")
+        except Exception as err:
+            fail_test("ca.verify_cert() tampered cert", err)
+
+        # 14.4c — wrong root CA is rejected
+        try:
+            if issued_cert is None:
+                raise AssertionError("skipped — ca.issue() failed")
+            wrong_root = dataclasses.replace(root_cert, id="ca_wrong_000000000000000000000000")
+            result = pq.ca.verify_cert(issued_cert, wrong_root)
+            if result.valid:
+                raise AssertionError("wrong CA should be rejected")
+            if "caId mismatch" not in (result.error or ""):
+                raise AssertionError(f"unexpected error: {result.error}")
+            log("valid", str(result.valid))
+            log("error", result.error)
+            pass_test("ca.verify_cert() — wrong root CA correctly rejected (caId mismatch)")
+        except Exception as err:
+            fail_test("ca.verify_cert() wrong CA", err)
+
+        # 14.4d — cert with meta verifies correctly (validates key ordering)
+        try:
+            if not is_x509:
+                r_meta = pq.ca.issue(
+                    subject=f"device-meta-{int(time.time() * 1000)}",
+                    public_key=device_public_key,
+                    expires_in_seconds=86400,
+                    meta={"model": "lock-v2", "batch": "2026-05"},
+                )
+                result = pq.ca.verify_cert(r_meta.certificate, root_cert)
+                if not result.valid:
+                    raise AssertionError(f"cert with meta failed: {result.error}")
+                log("valid", str(result.valid))
+                log("meta",  str(r_meta.certificate.meta))
+                pass_test("ca.verify_cert() — certificate with meta correctly verified (key ordering preserved)")
+                # revoke cleanup
+                pq.ca.revoke_cert(r_meta.meta.certId, "test cleanup").revokedAt  # noqa
+        except Exception as err:
+            fail_test("ca.verify_cert() cert with meta", err)
+
+    # 14.5 ca.get_crl() — before revocation
     crl_before = None
     try:
         r = pq.ca.get_crl()
@@ -822,7 +907,7 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.get_crl()", err)
 
-    # 14.5 ca.is_cert_revoked() — before revocation (certId string)
+    # 14.6 ca.is_cert_revoked() — before revocation (certId string)
     try:
         if issued_cert_id is None or crl_before is None:
             raise AssertionError("skipped — previous steps failed")
@@ -834,7 +919,7 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.is_cert_revoked() before revocation", err)
 
-    # 14.5b ca.is_cert_revoked() with PQCert object (pqcert format only)
+    # 14.6b ca.is_cert_revoked() with PQCert object (pqcert format only)
     if not is_x509 and issued_cert is not None and crl_before is not None:
         try:
             revoked = pq.ca.is_cert_revoked(issued_cert, crl_before)

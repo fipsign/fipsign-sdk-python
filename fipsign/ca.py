@@ -41,40 +41,33 @@ If the device signs using the JS SDK, generate the key pair with
 
 Note on offline cryptographic operations
 -----------------------------------------
-The following JS SDK methods are NOT available in the Python SDK:
+ca.verify_cert(cert, root_cert)
+    Verifies a PQCert certificate signature offline (no API call).
+    Available in the Python SDK — see CA.verify_cert() below.
+    Never raises — returns VerifyCertResult(valid, cert, error).
 
-  ca.verifyCert(cert, root_cert)
-      Verifies a PQCert certificate signature offline (no API call).
-      Not available: requires ML-DSA-65 local crypto without a Python
-      library that provides the same audit profile.
+ca.verifyX509Cert(cert_pem, root_pem)
+    Verifies an X.509 PEM certificate offline (no API call).
+    Not available as an SDK method — use pyca/cryptography directly:
 
-      Alternative for pqcert format: verify server-side via ca.get_cert()
-      which returns the live revocation status. Or use the JS SDK.
+        from cryptography import x509
+        from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65
 
-  ca.verifyX509Cert(cert_pem, root_pem)
-      Verifies an X.509 PEM certificate offline (no API call).
+        root_cert = x509.load_pem_x509_certificate(root_pem.encode())
+        leaf_cert = x509.load_pem_x509_certificate(leaf_pem.encode())
+        root_pub  = root_cert.public_key()
 
-      Alternative for x509 format: use pyca/cryptography >= 48.0.0:
-
-          from cryptography import x509
-          from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65
-
-          root_cert = x509.load_pem_x509_certificate(root_pem.encode())
-          leaf_cert = x509.load_pem_x509_certificate(leaf_pem.encode())
-          root_pub  = root_cert.public_key()
-
-          # Raises InvalidSignature on failure, returns None on success
-          root_pub.verify(leaf_cert.signature, leaf_cert.tbs_certificate_bytes, MLDSA65())
+        # Raises InvalidSignature on failure, returns None on success
+        root_pub.verify(leaf_cert.signature, leaf_cert.tbs_certificate_bytes, MLDSA65())
 
 The typical FIPSign workflow is:
   1. Server (or device setup script) generates keypair with generate_key_pair()
   2. Server issues cert with Python SDK (pq.ca.issue())
-  3. Device verifies cert with JS SDK (pq.ca.verifyCert() or verifyX509Cert())
+  3. Server or device verifies cert with pq.ca.verify_cert() (PQCert)
      or with pyca/cryptography for x509
   4. Server checks revocation with Python SDK (pq.ca.get_crl() + is_cert_revoked())
 
-All server-side operations work fully from Python. The JS SDK handles device-side
-cryptography for PQCert offline verification.
+All operations work fully from Python.
 """
 
 from __future__ import annotations
@@ -95,6 +88,7 @@ from .types import (
     CrlEntry,
     KeyPairResult,
     PQCert,
+    VerifyCertResult,
     _parse_certificate,
 )
 
@@ -537,6 +531,143 @@ class CA:
                 generatedAt = data.get("generatedAt", 0),
                 format      = "pqcert",
                 raw         = None,
+            )
+
+    def verify_cert(
+        self,
+        cert: PQCert,
+        root_cert: PQCert,
+    ) -> "VerifyCertResult":
+        """
+        Verify a PQCert certificate offline using the CA root certificate.
+
+        No API call — verifies the ML-DSA-65 signature locally using
+        pyca/cryptography (included as a dependency).
+
+        Does NOT check revocation — call get_crl() + is_cert_revoked() for that.
+        Never raises — always returns a VerifyCertResult.
+
+        This method is for PQCert format only. For X.509 certificates use
+        pyca/cryptography directly::
+
+            from cryptography import x509
+            from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65
+            root_cert = x509.load_pem_x509_certificate(root_pem.encode())
+            leaf_cert = x509.load_pem_x509_certificate(cert_pem.encode())
+            root_cert.public_key().verify(
+                leaf_cert.signature, leaf_cert.tbs_certificate_bytes, MLDSA65()
+            )
+
+        Parameters
+        ----------
+        cert : PQCert
+            The leaf certificate to verify (type must be "CA_CERT").
+        root_cert : PQCert
+            The root CA certificate (type must be "CA_ROOT"). This is the
+            certificate shown once at CA creation time — store it securely.
+
+        Returns
+        -------
+        VerifyCertResult
+            .valid — True if the signature is valid and cert has not expired.
+            .cert  — The verified PQCert dataclass. None when valid=False.
+            .error — Error message when valid=False:
+                'Expected a CA_CERT certificate'
+                'Expected a CA_ROOT certificate'
+                'Certificate was not issued by this CA (caId mismatch)'
+                'Certificate has expired'
+                'Invalid certificate signature'
+
+        Examples
+        --------
+        >>> import json
+        >>> with open("root-cert.json") as f:
+        ...     root_cert = PQCert.from_dict(json.load(f))
+        >>>
+        >>> result = pq.ca.verify_cert(device_cert, root_cert)
+        >>> if not result.valid:
+        ...     raise PermissionError(result.error)
+        >>> print(result.cert.subject)   # "device-serial-00123"
+        >>> print(result.cert.expiresAt) # Unix timestamp
+        >>>
+        >>> # Then check revocation
+        >>> crl = pq.ca.get_crl()
+        >>> if pq.ca.is_cert_revoked(device_cert, crl.crl):
+        ...     raise PermissionError("Certificate revoked")
+        """
+        import json as _json
+        import time as _time
+
+        from .types import VerifyCertResult
+
+        try:
+            # ── Type checks ───────────────────────────────────────────────────
+            if cert.type != "CA_CERT":
+                return VerifyCertResult(
+                    valid=False,
+                    error="Expected a CA_CERT certificate",
+                )
+            if root_cert.type != "CA_ROOT":
+                return VerifyCertResult(
+                    valid=False,
+                    error="Expected a CA_ROOT certificate",
+                )
+
+            # ── caId match ────────────────────────────────────────────────────
+            if cert.caId != root_cert.id:
+                return VerifyCertResult(
+                    valid=False,
+                    error="Certificate was not issued by this CA (caId mismatch)",
+                )
+
+            # ── Expiry check ──────────────────────────────────────────────────
+            now = int(_time.time())
+            if cert.expiresAt is not None and cert.expiresAt < now:
+                return VerifyCertResult(
+                    valid=False,
+                    error=f"Certificate has expired",
+                )
+
+            # ── Canonical message — mirrors backend ca.ts canonicalize() ──────
+            # Backend: JSON.stringify(cert, Object.keys(cert).sort())
+            # JS JSON.stringify with array replacer sorts TOP-LEVEL keys only.
+            # Nested values (e.g. meta dict) are serialized in insertion order.
+            # Python equivalent: sort top-level keys, serialize nested as-is,
+            # no spaces (JSON.stringify default), UTF-8 encoding.
+            cert_dict = cert.to_dict()
+            cert_dict.pop("signature", None)          # exclude signature field
+            sorted_keys = sorted(cert_dict.keys())
+            ordered: dict = {k: cert_dict[k] for k in sorted_keys}
+            # JS JSON.stringify(cert, Object.keys(cert).sort()) uses the sorted
+            # top-level keys as a replacer array. Replacer arrays apply recursively,
+            # so nested meta keys (e.g. {"env":"test"}) are NOT in the replacer and
+            # get stripped — meta is serialized as {} regardless of its contents.
+            if "meta" in ordered:
+                ordered["meta"] = {}
+            canonical = _json.dumps(ordered, separators=(",", ":"))
+            msg_bytes = canonical.encode("utf-8")
+
+            # ── Signature verification ────────────────────────────────────────
+            from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65PublicKey
+            from cryptography.exceptions import InvalidSignature
+
+            pub_key_bytes = base64.b64decode(root_cert.publicKey)
+            sig_bytes     = base64.b64decode(cert.signature)
+
+            public_key = MLDSA65PublicKey.from_public_bytes(pub_key_bytes)
+            public_key.verify(sig_bytes, msg_bytes)  # raises InvalidSignature on failure
+
+            return VerifyCertResult(valid=True, cert=cert)
+
+        except InvalidSignature:
+            return VerifyCertResult(
+                valid=False,
+                error="Invalid certificate signature",
+            )
+        except Exception as exc:
+            return VerifyCertResult(
+                valid=False,
+                error=str(exc),
             )
 
     def is_cert_revoked(
