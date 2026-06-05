@@ -196,10 +196,12 @@ class HealthResult:
 # determined at creation time (dashboard) and cannot be changed afterwards.
 # All CA operations (issue, revoke, get_cert, get_crl) work with both formats.
 #
-# Offline cryptographic operations (verifyCert, verifyX509Cert) are NOT
-# available in the Python SDK — see ca.py for details and alternatives.
-# generate_key_pair() IS available via pyca/cryptography >= 48.0.0 —
-# see ca.py and README for usage and the seed-vs-expanded-key distinction.
+# Offline cryptographic operations:
+#   verify_cert()      — verifies PQCert certificates locally (ca.py).
+#   verify_x509_cert() — verifies X.509 PEM certificates locally (ca.py).
+#   Both use pyca/cryptography >= 48.0.0, included as a dependency.
+#   generate_key_pair() IS available via pyca/cryptography >= 48.0.0 —
+#   see ca.py and README for usage and the seed-vs-expanded-key distinction.
 
 CaFormat = Literal["pqcert", "x509"]
 
@@ -398,26 +400,36 @@ class CaGetCrlResult:
 @dataclass
 class VerifyCertResult:
     """
-    Result of ca.verify_cert().
+    Returned by ca.verify_cert() and ca.verify_x509_cert().
 
     Attributes
     ----------
     valid : bool
         True if the certificate signature is valid and the certificate has not expired.
         Does NOT check revocation — call is_cert_revoked() for that.
-    cert : PQCert | None
-        The verified PQCert dataclass. None when valid=False.
+    cert : PQCert | str | None
+        For ca.verify_cert() (PQCert format): the verified PQCert dataclass.
+        For ca.verify_x509_cert() (X.509 format): the verified PEM string.
+        None when valid=False.
     error : str | None
-        Human-readable error message when valid=False. One of:
+        Human-readable error message when valid=False.
+
+        From ca.verify_cert() (PQCert):
             'Expected a CA_CERT certificate'
             'Expected a CA_ROOT certificate'
             'Certificate was not issued by this CA (caId mismatch)'
             'Certificate has expired'
             'Invalid certificate signature'
+
+        From ca.verify_x509_cert() (X.509):
+            'Certificate has expired'
+            'Invalid certificate signature — not signed by this root CA'
+            'Unsupported signature algorithm: <OID>. Expected ML-DSA-65 (2.16.840.1.101.3.4.3.18)'
+            'Unsupported root CA algorithm: <OID>. Expected ML-DSA-65 (2.16.840.1.101.3.4.3.18)'
     """
     valid: bool
-    cert:  Optional[PQCert] = None
-    error: Optional[str]    = None
+    cert:  Optional[Union[PQCert, str]] = None  # PQCert for pqcert, str (PEM) for x509
+    error: Optional[str]                = None
 
 
 # ─── Key generation ───────────────────────────────────────────────────────────

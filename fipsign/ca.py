@@ -43,28 +43,19 @@ Note on offline cryptographic operations
 -----------------------------------------
 ca.verify_cert(cert, root_cert)
     Verifies a PQCert certificate signature offline (no API call).
-    Available in the Python SDK — see CA.verify_cert() below.
     Never raises — returns VerifyCertResult(valid, cert, error).
 
-ca.verifyX509Cert(cert_pem, root_pem)
+ca.verify_x509_cert(cert_pem, root_pem)
     Verifies an X.509 PEM certificate offline (no API call).
-    Not available as an SDK method — use pyca/cryptography directly:
-
-        from cryptography import x509
-        from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65
-
-        root_cert = x509.load_pem_x509_certificate(root_pem.encode())
-        leaf_cert = x509.load_pem_x509_certificate(leaf_pem.encode())
-        root_pub  = root_cert.public_key()
-
-        # Raises InvalidSignature on failure, returns None on success
-        root_pub.verify(leaf_cert.signature, leaf_cert.tbs_certificate_bytes, MLDSA65())
+    Uses pyca/cryptography directly (included as a dependency).
+    Never raises — returns VerifyCertResult(valid, cert, error).
+    Mirrors ca.verifyX509Cert() from the JS SDK.
 
 The typical FIPSign workflow is:
   1. Server (or device setup script) generates keypair with generate_key_pair()
   2. Server issues cert with Python SDK (pq.ca.issue())
   3. Server or device verifies cert with pq.ca.verify_cert() (PQCert)
-     or with pyca/cryptography for x509
+     or pq.ca.verify_x509_cert() (X.509)
   4. Server checks revocation with Python SDK (pq.ca.get_crl() + is_cert_revoked())
 
 All operations work fully from Python.
@@ -94,6 +85,9 @@ from .types import (
 
 if TYPE_CHECKING:
     from .client import PQAuth
+
+# OID for ML-DSA-65 per RFC 9881
+_OID_ML_DSA_65 = "2.16.840.1.101.3.4.3.18"
 
 
 # ─── generate_key_pair() ──────────────────────────────────────────────────────
@@ -548,15 +542,7 @@ class CA:
         Never raises — always returns a VerifyCertResult.
 
         This method is for PQCert format only. For X.509 certificates use
-        pyca/cryptography directly::
-
-            from cryptography import x509
-            from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65
-            root_cert = x509.load_pem_x509_certificate(root_pem.encode())
-            leaf_cert = x509.load_pem_x509_certificate(cert_pem.encode())
-            root_cert.public_key().verify(
-                leaf_cert.signature, leaf_cert.tbs_certificate_bytes, MLDSA65()
-            )
+        ca.verify_x509_cert() instead.
 
         Parameters
         ----------
@@ -663,6 +649,127 @@ class CA:
             return VerifyCertResult(
                 valid=False,
                 error="Invalid certificate signature",
+            )
+        except Exception as exc:
+            return VerifyCertResult(
+                valid=False,
+                error=str(exc),
+            )
+
+    def verify_x509_cert(
+        self,
+        cert_pem: str,
+        root_pem: str,
+    ) -> "VerifyCertResult":
+        """
+        Verify an X.509 ML-DSA-65 certificate offline using the root CA PEM.
+
+        No API call — uses pyca/cryptography (included as a dependency).
+        Does NOT check revocation — call get_crl() + is_cert_revoked() for that.
+        Never raises — always returns a VerifyCertResult.
+
+        This method is for X.509 format only. For PQCert certificates use
+        ca.verify_cert() instead.
+
+        Mirrors ``ca.verifyX509Cert()`` from the JS SDK.
+
+        Parameters
+        ----------
+        cert_pem : str
+            The leaf certificate PEM string to verify (-----BEGIN CERTIFICATE-----...).
+            This is the ``certificate`` field returned by ``ca.issue()`` for X.509 CAs.
+        root_pem : str
+            The root CA PEM string shown once at CA creation time.
+            Store it securely — treat it like a private key.
+
+        Returns
+        -------
+        VerifyCertResult
+            .valid — True if the signature is valid and cert has not expired.
+            .cert  — The verified PEM string (cert_pem). None when valid=False.
+            .error — Error message when valid=False. One of:
+                'Certificate has expired'
+                'Invalid certificate signature — not signed by this root CA'
+                'Unsupported signature algorithm: <OID>. Expected ML-DSA-65 (2.16.840.1.101.3.4.3.18)'
+                'Unsupported root CA algorithm: <OID>. Expected ML-DSA-65 (2.16.840.1.101.3.4.3.18)'
+
+        Examples
+        --------
+        >>> root_pem = os.environ["FIPSIGN_ROOT_CERT_PEM"]
+        >>>
+        >>> result = pq.ca.verify_x509_cert(cert_pem, root_pem)
+        >>> if not result.valid:
+        ...     raise PermissionError(result.error)
+        >>> print(result.cert[:27])  # "-----BEGIN CERTIFICATE-----"
+        >>>
+        >>> # Then check revocation using certId from ca.issue()
+        >>> crl = pq.ca.get_crl()
+        >>> if pq.ca.is_cert_revoked(cert_id, crl.crl):
+        ...     raise PermissionError("Certificate revoked")
+        """
+        from .types import VerifyCertResult
+
+        try:
+            from cryptography import x509
+            from cryptography.exceptions import InvalidSignature
+        except ImportError:
+            return VerifyCertResult(
+                valid=False,
+                error="verify_x509_cert() requires cryptography >= 48.0.0. "
+                      "Install with: pip install 'cryptography>=48.0.0'",
+            )
+
+        try:
+            # ── Load both certificates ────────────────────────────────────────
+            leaf_cert = x509.load_pem_x509_certificate(cert_pem.encode())
+            root_cert = x509.load_pem_x509_certificate(root_pem.encode())
+
+            # ── Check leaf certificate expiry ─────────────────────────────────
+            import datetime
+            now = datetime.datetime.now(datetime.timezone.utc)
+            if leaf_cert.not_valid_after_utc < now:
+                return VerifyCertResult(
+                    valid=False,
+                    error="Certificate has expired",
+                )
+
+            # ── Verify leaf certificate algorithm OID ─────────────────────────
+            leaf_oid = leaf_cert.signature_algorithm_oid.dotted_string
+            if leaf_oid != _OID_ML_DSA_65:
+                return VerifyCertResult(
+                    valid=False,
+                    error=(
+                        f"Unsupported signature algorithm: {leaf_oid}. "
+                        f"Expected ML-DSA-65 ({_OID_ML_DSA_65})"
+                    ),
+                )
+
+            # ── Verify root CA algorithm OID ──────────────────────────────────
+            root_oid = root_cert.signature_algorithm_oid.dotted_string
+            if root_oid != _OID_ML_DSA_65:
+                return VerifyCertResult(
+                    valid=False,
+                    error=(
+                        f"Unsupported root CA algorithm: {root_oid}. "
+                        f"Expected ML-DSA-65 ({_OID_ML_DSA_65})"
+                    ),
+                )
+
+            # ── Verify leaf certificate signature using root CA public key ─────
+            # root_cert.public_key() returns an MLDSA65PublicKey for ML-DSA-65 certs.
+            # MLDSA65PublicKey.verify(signature, data) — no algorithm parameter,
+            # unlike ECDSA/RSA. Raises InvalidSignature on failure, None on success.
+            root_cert.public_key().verify(
+                leaf_cert.signature,
+                leaf_cert.tbs_certificate_bytes,
+            )
+
+            return VerifyCertResult(valid=True, cert=cert_pem)
+
+        except InvalidSignature:
+            return VerifyCertResult(
+                valid=False,
+                error="Invalid certificate signature — not signed by this root CA",
             )
         except Exception as exc:
             return VerifyCertResult(

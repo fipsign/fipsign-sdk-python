@@ -42,6 +42,7 @@ from .types import (
     UsageCurrent,
     UsageResult,
     VerifyResult,
+    VerifyCertResult,
     WebhookGetResult,
     WebhookInfo,
     WebhookResult,
@@ -54,6 +55,9 @@ DEFAULT_TIMEOUT  = 10
 # API keys must be "pqa_" followed by exactly 64 lowercase hex characters.
 # Mirrors the validation in the JS SDK: /^pqa_[0-9a-f]{64}$/
 _API_KEY_RE = re.compile(r"^pqa_[0-9a-f]{64}$")
+
+# OID for ML-DSA-65 per RFC 9881
+_OID_ML_DSA_65 = "2.16.840.1.101.3.4.3.18"
 
 
 # ─── AsyncWebhooks ────────────────────────────────────────────────────────────
@@ -329,6 +333,177 @@ class AsyncCA:
                 format      = "pqcert",
                 raw         = None,
             )
+
+    def verify_cert(
+        self,
+        cert: PQCert,
+        root_cert: PQCert,
+    ) -> VerifyCertResult:
+        """
+        Verify a PQCert certificate offline using the CA root certificate.
+
+        Not async — cryptographic verification is purely in-memory.
+        Mirrors CA.verify_cert() exactly. For X.509 certificates use
+        verify_x509_cert() instead.
+
+        Never raises — returns VerifyCertResult(valid=False, error=...) on failure.
+
+        Parameters
+        ----------
+        cert : PQCert
+            The leaf certificate to verify (type must be "CA_CERT").
+        root_cert : PQCert
+            The root CA certificate (type must be "CA_ROOT").
+
+        Returns
+        -------
+        VerifyCertResult
+            .valid — True if valid and not expired.
+            .cert  — The verified PQCert. None when valid=False.
+            .error — Error message when valid=False.
+
+        Examples
+        --------
+        >>> result = pq.ca.verify_cert(device_cert, root_cert)
+        >>> if not result.valid:
+        ...     raise PermissionError(result.error)
+        """
+        import json as _json
+        import time as _time
+        import base64
+
+        try:
+            if cert.type != "CA_CERT":
+                return VerifyCertResult(valid=False, error="Expected a CA_CERT certificate")
+            if root_cert.type != "CA_ROOT":
+                return VerifyCertResult(valid=False, error="Expected a CA_ROOT certificate")
+            if cert.caId != root_cert.id:
+                return VerifyCertResult(
+                    valid=False,
+                    error="Certificate was not issued by this CA (caId mismatch)",
+                )
+
+            now = int(_time.time())
+            if cert.expiresAt is not None and cert.expiresAt < now:
+                return VerifyCertResult(valid=False, error="Certificate has expired")
+
+            cert_dict = cert.to_dict()
+            cert_dict.pop("signature", None)
+            sorted_keys = sorted(cert_dict.keys())
+            ordered: dict = {k: cert_dict[k] for k in sorted_keys}
+            if "meta" in ordered:
+                ordered["meta"] = {}
+            canonical = _json.dumps(ordered, separators=(",", ":"))
+            msg_bytes = canonical.encode("utf-8")
+
+            from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65PublicKey
+            from cryptography.exceptions import InvalidSignature
+
+            pub_key_bytes = base64.b64decode(root_cert.publicKey)
+            sig_bytes     = base64.b64decode(cert.signature)
+            public_key    = MLDSA65PublicKey.from_public_bytes(pub_key_bytes)
+            public_key.verify(sig_bytes, msg_bytes)
+
+            return VerifyCertResult(valid=True, cert=cert)
+
+        except InvalidSignature:
+            return VerifyCertResult(valid=False, error="Invalid certificate signature")
+        except Exception as exc:
+            return VerifyCertResult(valid=False, error=str(exc))
+
+    def verify_x509_cert(
+        self,
+        cert_pem: str,
+        root_pem: str,
+    ) -> VerifyCertResult:
+        """
+        Verify an X.509 ML-DSA-65 certificate offline using the root CA PEM.
+
+        Not async — cryptographic verification is purely in-memory.
+        Mirrors CA.verify_x509_cert() exactly. For PQCert certificates use
+        verify_cert() instead.
+
+        Never raises — returns VerifyCertResult(valid=False, error=...) on failure.
+
+        Parameters
+        ----------
+        cert_pem : str
+            The leaf certificate PEM string to verify.
+        root_pem : str
+            The root CA PEM string shown once at CA creation time.
+
+        Returns
+        -------
+        VerifyCertResult
+            .valid — True if valid and not expired.
+            .cert  — The verified PEM string. None when valid=False.
+            .error — Error message when valid=False. One of:
+                'Certificate has expired'
+                'Invalid certificate signature — not signed by this root CA'
+                'Unsupported signature algorithm: <OID>. Expected ML-DSA-65 (2.16.840.1.101.3.4.3.18)'
+                'Unsupported root CA algorithm: <OID>. Expected ML-DSA-65 (2.16.840.1.101.3.4.3.18)'
+
+        Examples
+        --------
+        >>> result = pq.ca.verify_x509_cert(cert_pem, root_pem)
+        >>> if not result.valid:
+        ...     raise PermissionError(result.error)
+        """
+        try:
+            from cryptography import x509
+            from cryptography.exceptions import InvalidSignature
+        except ImportError:
+            return VerifyCertResult(
+                valid=False,
+                error="verify_x509_cert() requires cryptography >= 48.0.0. "
+                      "Install with: pip install 'cryptography>=48.0.0'",
+            )
+
+        try:
+            import datetime
+
+            leaf_cert = x509.load_pem_x509_certificate(cert_pem.encode())
+            root_cert = x509.load_pem_x509_certificate(root_pem.encode())
+
+            now = datetime.datetime.now(datetime.timezone.utc)
+            if leaf_cert.not_valid_after_utc < now:
+                return VerifyCertResult(valid=False, error="Certificate has expired")
+
+            leaf_oid = leaf_cert.signature_algorithm_oid.dotted_string
+            if leaf_oid != _OID_ML_DSA_65:
+                return VerifyCertResult(
+                    valid=False,
+                    error=(
+                        f"Unsupported signature algorithm: {leaf_oid}. "
+                        f"Expected ML-DSA-65 ({_OID_ML_DSA_65})"
+                    ),
+                )
+
+            root_oid = root_cert.signature_algorithm_oid.dotted_string
+            if root_oid != _OID_ML_DSA_65:
+                return VerifyCertResult(
+                    valid=False,
+                    error=(
+                        f"Unsupported root CA algorithm: {root_oid}. "
+                        f"Expected ML-DSA-65 ({_OID_ML_DSA_65})"
+                    ),
+                )
+
+            # MLDSA65PublicKey.verify(signature, data) — no algorithm parameter
+            root_cert.public_key().verify(
+                leaf_cert.signature,
+                leaf_cert.tbs_certificate_bytes,
+            )
+
+            return VerifyCertResult(valid=True, cert=cert_pem)
+
+        except InvalidSignature:
+            return VerifyCertResult(
+                valid=False,
+                error="Invalid certificate signature — not signed by this root CA",
+            )
+        except Exception as exc:
+            return VerifyCertResult(valid=False, error=str(exc))
 
     def is_cert_revoked(
         self,

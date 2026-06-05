@@ -495,7 +495,7 @@ Verify a PQCert certificate entirely in memory using the CA root certificate. No
 
 **Never raises.** Returns a `VerifyCertResult` with `valid=False` and an `error` message on any failure.
 
-This method is for **PQCert format only**. For X.509 certificates use pyca/cryptography directly (see the X.509 lifecycle example below).
+This method is for **PQCert format only**. For X.509 certificates use `ca.verify_x509_cert()` instead.
 
 ```python
 import json
@@ -520,22 +520,39 @@ print(result.cert.subject)   # "device-serial-00123"
 print(result.cert.expiresAt) # Unix timestamp
 ```
 
-> **For X.509 CAs**, use pyca/cryptography directly (included as a dependency):
-> ```python
-> from cryptography import x509
-> from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65
->
-> root_cert = x509.load_pem_x509_certificate(root_pem.encode())
-> leaf_cert = x509.load_pem_x509_certificate(leaf_pem.encode())
-> root_pub  = root_cert.public_key()
->
-> # Raises InvalidSignature on failure, returns None on success
-> root_pub.verify(leaf_cert.signature, leaf_cert.tbs_certificate_bytes, MLDSA65())
-> ```
->
 > **For real-time server-side status checks**, use `ca.get_cert()` — it returns the live revocation status without needing the root certificate.
 
 > **Note on `meta`:** The `meta` field is included in the certificate but its contents are **not part of the signed canonical message** — this mirrors the JavaScript `JSON.stringify` behavior where nested object keys are excluded by the replacer array. Verification always succeeds regardless of `meta` content. To validate `meta` integrity, use `ca.get_cert()` which returns the server-authoritative record.
+
+---
+
+### ca.verify_x509_cert() — Offline certificate verification (X.509)
+
+Verify an X.509 PEM certificate entirely in memory using the root CA PEM. No API call — uses pyca/cryptography (included as a dependency). Does not check revocation.
+
+**Never raises.** Returns a `VerifyCertResult` with `valid=False` and an `error` message on any failure.
+
+This method is for **X.509 format only**. For PQCert certificates use `ca.verify_cert()` instead.
+
+Mirrors `ca.verifyX509Cert()` from the JS SDK.
+
+```python
+import os
+
+root_pem = os.environ["FIPSIGN_ROOT_CERT_PEM"]  # PEM saved at CA creation
+
+result = pq.ca.verify_x509_cert(cert_pem, root_pem)
+
+if not result.valid:
+    # Possible error messages:
+    #   'Certificate has expired'
+    #   'Invalid certificate signature — not signed by this root CA'
+    #   'Unsupported signature algorithm: <OID>. Expected ML-DSA-65 (2.16.840.1.101.3.4.3.18)'
+    #   'Unsupported root CA algorithm: <OID>. Expected ML-DSA-65 (2.16.840.1.101.3.4.3.18)'
+    raise PermissionError(result.error)
+
+print(result.cert[:27])  # "-----BEGIN CERTIFICATE-----"
+```
 
 ---
 
@@ -676,6 +693,7 @@ pq.ca.revoke_cert(certificate.id, "device decommissioned")
 ### Full device lifecycle — X.509
 
 ```python
+import os
 from fipsign import PQAuth, generate_key_pair
 
 pq = PQAuth("pqa_your_api_key")
@@ -698,17 +716,9 @@ cert_pem = result.certificate    # PEM string — store on device
 cert_id  = result.meta.certId   # store alongside the PEM
 
 # 3. At runtime: offline signature verification (no API call)
-#    Requires pyca/cryptography >= 44.0.0 (included as a dependency)
-from cryptography import x509
-from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65
-
-root_cert = x509.load_pem_x509_certificate(root_pem.encode())
-leaf_cert = x509.load_pem_x509_certificate(cert_pem.encode())
-root_cert.public_key().verify(
-    leaf_cert.signature,
-    leaf_cert.tbs_certificate_bytes,
-    MLDSA65()
-)  # raises InvalidSignature on failure
+result = pq.ca.verify_x509_cert(cert_pem, root_pem)
+if not result.valid:
+    raise PermissionError(result.error)
 
 # 4. At runtime: bulk revocation check (offline, from cached CRL)
 crl_result = pq.ca.get_crl()
@@ -824,7 +834,18 @@ WEBHOOK_SITE_TOKEN=your-uuid \
 python tests/test_sdk.py
 ```
 
-> `FIPSIGN_ROOT_CERT_JSON` is the JSON content of the root certificate shown once at CA creation time. Save it securely — it cannot be recovered from the dashboard.
+**X.509 CA — 49 tests (includes offline `ca.verify_x509_cert()`):**
+```bash
+FIPSIGN_API_KEY=pqa_your_x509_key \
+WEBHOOK_URL=https://webhook.site/your-uuid \
+WEBHOOK_SITE_TOKEN=your-uuid \
+FIPSIGN_ROOT_CERT_PEM="$(cat root-ca.pem)" \
+python tests/test_sdk.py
+```
+
+> `FIPSIGN_ROOT_CERT_JSON` is the JSON content of the root certificate shown once at PQCert CA creation time.
+> `FIPSIGN_ROOT_CERT_PEM` is the PEM content of the root certificate shown once at X.509 CA creation time.
+> Save both securely — they cannot be recovered from the dashboard.
 
 ---
 
