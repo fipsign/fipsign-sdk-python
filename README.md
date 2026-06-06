@@ -1,10 +1,14 @@
 # fipsign-sdk
 
+[![PyPI](https://img.shields.io/pypi/v/fipsign-sdk)](https://pypi.org/project/fipsign-sdk/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![NIST FIPS 204](https://img.shields.io/badge/NIST-FIPS%20204-blue)](https://csrc.nist.gov/pubs/fips/204/final)
+
 Post-quantum signing SDK for Python.
 
 Signs and verifies any payload using **ML-DSA-65** (NIST FIPS 204) — the post-quantum digital signature standard resistant to Shor's algorithm. Standardized by NIST in August 2024.
 
-**Not just for auth.** Sign users, orders, documents, devices, events — any entity that needs a tamper-proof, quantum-resistant signature.
+**Not just for auth.** Sign users, orders, documents, devices, AI agents, events — any entity that needs a tamper-proof, quantum-resistant signature.
 
 ---
 
@@ -50,6 +54,14 @@ result = pq.sign("user_123", email="user@example.com", role="admin", expires_in_
 token  = result.token
 meta   = result.meta
 usage  = result.usage
+
+# Sign an AI agent action
+token = fipsign.sign(
+    sub="agent_summarizer_v2",
+    action="document:summarize",
+    user_id="user_123",
+    trace_id="trace_abc",
+)
 
 # Sign an order
 result = pq.sign("order_456", amount=299.99, currency="USD", expires_in_seconds=300)
