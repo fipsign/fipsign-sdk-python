@@ -534,7 +534,7 @@ print(result.cert.expiresAt) # Unix timestamp
 
 > **For real-time server-side status checks**, use `ca.get_cert()` — it returns the live revocation status without needing the root certificate.
 
-> **Note on `meta`:** The `meta` field is included in the certificate but its contents are **not part of the signed canonical message** — this mirrors the JavaScript `JSON.stringify` behavior where nested object keys are excluded by the replacer array. Verification always succeeds regardless of `meta` content. To validate `meta` integrity, use `ca.get_cert()` which returns the server-authoritative record.
+> **Note on `meta`:** The `meta` field is fully covered by the ML-DSA-65 signature. Altering any field in `meta` after issuance will cause `ca.verify_cert()` to reject the certificate with `Invalid certificate signature`.
 
 ---
 

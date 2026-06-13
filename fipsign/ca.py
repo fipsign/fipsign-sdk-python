@@ -615,22 +615,20 @@ class CA:
                 )
 
             # ── Canonical message — mirrors backend ca.ts canonicalize() ──────
-            # Backend: JSON.stringify(cert, Object.keys(cert).sort())
-            # JS JSON.stringify with array replacer sorts TOP-LEVEL keys only.
-            # Nested values (e.g. meta dict) are serialized in insertion order.
-            # Python equivalent: sort top-level keys, serialize nested as-is,
+            # Backend (fixed): recursive sortedKeys() that covers all nested fields.
+            # All fields including meta are covered by the ML-DSA-65 signature.
+            # Python equivalent: recursively sort all keys at every level,
             # no spaces (JSON.stringify default), UTF-8 encoding.
+            def sorted_keys_recursive(obj):
+                if isinstance(obj, list):
+                    return [sorted_keys_recursive(v) for v in obj]
+                if isinstance(obj, dict):
+                    return {k: sorted_keys_recursive(obj[k]) for k in sorted(obj.keys())}
+                return obj
+
             cert_dict = cert.to_dict()
             cert_dict.pop("signature", None)          # exclude signature field
-            sorted_keys = sorted(cert_dict.keys())
-            ordered: dict = {k: cert_dict[k] for k in sorted_keys}
-            # JS JSON.stringify(cert, Object.keys(cert).sort()) uses the sorted
-            # top-level keys as a replacer array. Replacer arrays apply recursively,
-            # so nested meta keys (e.g. {"env":"test"}) are NOT in the replacer and
-            # get stripped — meta is serialized as {} regardless of its contents.
-            if "meta" in ordered:
-                ordered["meta"] = {}
-            canonical = _json.dumps(ordered, separators=(",", ":"))
+            canonical = _json.dumps(sorted_keys_recursive(cert_dict), separators=(",", ":"))
             msg_bytes = canonical.encode("utf-8")
 
             # ── Signature verification ────────────────────────────────────────

@@ -387,13 +387,16 @@ class AsyncCA:
             if cert.expiresAt is not None and cert.expiresAt < now:
                 return VerifyCertResult(valid=False, error="Certificate has expired")
 
+            def sorted_keys_recursive(obj):
+                if isinstance(obj, list):
+                    return [sorted_keys_recursive(v) for v in obj]
+                if isinstance(obj, dict):
+                    return {k: sorted_keys_recursive(obj[k]) for k in sorted(obj.keys())}
+                return obj
+
             cert_dict = cert.to_dict()
             cert_dict.pop("signature", None)
-            sorted_keys = sorted(cert_dict.keys())
-            ordered: dict = {k: cert_dict[k] for k in sorted_keys}
-            if "meta" in ordered:
-                ordered["meta"] = {}
-            canonical = _json.dumps(ordered, separators=(",", ":"))
+            canonical = _json.dumps(sorted_keys_recursive(cert_dict), separators=(",", ":"))
             msg_bytes = canonical.encode("utf-8")
 
             from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65PublicKey
