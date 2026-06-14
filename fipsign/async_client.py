@@ -43,9 +43,6 @@ from .types import (
     UsageResult,
     VerifyResult,
     VerifyCertResult,
-    WebhookGetResult,
-    WebhookInfo,
-    WebhookResult,
     _parse_certificate,
 )
 
@@ -58,43 +55,6 @@ _API_KEY_RE = re.compile(r"^pqa_[0-9a-f]{64}$")
 
 # OID for ML-DSA-65 per RFC 9881
 _OID_ML_DSA_65 = "2.16.840.1.101.3.4.3.18"
-
-
-# ─── AsyncWebhooks ────────────────────────────────────────────────────────────
-
-class AsyncWebhooks:
-    def __init__(self, client: "AsyncPQAuth") -> None:
-        self._client = client
-
-    async def register(self, url: str, events: Optional[List[str]] = None) -> WebhookResult:
-        body: dict = {"url": url}
-        if events is not None:
-            body["events"] = events
-        data = await self._client._request("POST", "/webhooks", json=body)
-        wh   = data["webhook"]
-        return WebhookResult(
-            webhook=WebhookInfo(url=wh["url"], events=wh["events"], secret=wh.get("secret"))
-        )
-
-    async def get(self) -> WebhookGetResult:
-        data = await self._client._request("GET", "/webhooks")
-        wh   = data.get("webhook")
-        if wh is None:
-            return WebhookGetResult(webhook=None)
-        return WebhookGetResult(
-            webhook=WebhookInfo(
-                url=wh["url"],
-                events=wh["events"],
-                active=wh.get("active"),
-                createdAt=wh.get("createdAt"),
-            )
-        )
-
-    async def delete(self) -> dict:
-        return await self._client._request("DELETE", "/webhooks")
-
-    async def test(self) -> dict:
-        return await self._client._request("POST", "/webhooks/test")
 
 
 # ─── AsyncCA ──────────────────────────────────────────────────────────────────
@@ -580,7 +540,6 @@ class AsyncPQAuth:
             },
             timeout=timeout,
         )
-        self.webhooks = AsyncWebhooks(self)
         self.ca       = AsyncCA(self)
 
     async def __aenter__(self) -> "AsyncPQAuth":

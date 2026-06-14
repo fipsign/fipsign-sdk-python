@@ -23,7 +23,6 @@ import sys
 import time
 from datetime import datetime
 
-import requests as _requests
 
 try:
     from fipsign import PQAuth, PQAuthError, generate_key_pair
@@ -35,20 +34,12 @@ except ImportError:
 # ─── Required environment variables ───────────────────────────────────────────
 
 API_KEY            = os.environ.get("FIPSIGN_API_KEY")
-WEBHOOK_URL        = os.environ.get("WEBHOOK_URL")
-WEBHOOK_SITE_TOKEN = os.environ.get("WEBHOOK_SITE_TOKEN")
 
 if not API_KEY:
     print("\033[31mError: FIPSIGN_API_KEY is required.\033[0m")
     print("Get your API key at https://app.fipsign.dev")
     sys.exit(1)
 
-if not WEBHOOK_URL or not WEBHOOK_SITE_TOKEN:
-    print("\033[31mError: WEBHOOK_URL and WEBHOOK_SITE_TOKEN are required.\033[0m")
-    print("Create a free endpoint at https://webhook.site and copy your UUID.")
-    print("  WEBHOOK_URL=https://webhook.site/<your-uuid>")
-    print("  WEBHOOK_SITE_TOKEN=<your-uuid>")
-    sys.exit(1)
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -416,86 +407,9 @@ def run() -> None:
         fail_test("verify() unknown algorithm", err)
 
     # ─── 10 Webhooks ─────────────────────────────────────────────────────────
-    section("10 · webhooks — get before register, register, secret preservation, get, test, delete")
-
-    try:
-        try:
-            pq.webhooks.delete()
-        except Exception:
-            pass
-        result = pq.webhooks.get()
-        if result.webhook is not None:
-            raise AssertionError("webhook should be None before registering")
-        log("webhook", "None")
-        pass_test("webhooks.get() before register — returns None")
-    except Exception as err:
-        fail_test("webhooks.get() before register", err)
-
-    webhook_secret = None
-    try:
-        result = pq.webhooks.register(
-            url=WEBHOOK_URL,
-            events=["token.signed", "limit.warning"],
-        )
-        if not result.webhook.url:    raise AssertionError("missing webhook.url")
-        if not result.webhook.secret: raise AssertionError("missing webhook.secret")
-        if not result.webhook.events: raise AssertionError("events is empty")
-        webhook_secret = result.webhook.secret
-        log("url",    result.webhook.url)
-        log("events", ", ".join(result.webhook.events))
-        log("secret", result.webhook.secret[:8] + "...")
-        pass_test("webhooks.register() — webhook created with secret")
-    except Exception as err:
-        fail_test("webhooks.register()", err)
-
-    if webhook_secret:
-        try:
-            result2 = pq.webhooks.register(
-                url=WEBHOOK_URL,
-                events=["token.signed", "token.revoked"],
-            )
-            if not result2.webhook.secret:
-                raise AssertionError("missing webhook.secret on re-register")
-            if result2.webhook.secret != webhook_secret:
-                raise AssertionError(
-                    f"secret changed on re-register — expected same secret\n"
-                    f"  before: {webhook_secret[:8]}...\n"
-                    f"  after:  {result2.webhook.secret[:8]}..."
-                )
-            log("secret preserved", result2.webhook.secret[:8] + "...")
-            pass_test("webhooks.register() re-register — secret preserved, events updated")
-        except Exception as err:
-            fail_test("webhooks.register() re-register secret preservation", err)
-
-    try:
-        result = pq.webhooks.get()
-        if result.webhook is None:        raise AssertionError("webhook is None after register")
-        if not result.webhook.url:        raise AssertionError("missing webhook.url")
-        if not result.webhook.events:     raise AssertionError("events is empty")
-        if result.webhook.secret is not None:
-            raise AssertionError("secret should not be returned by get()")
-        log("url",    result.webhook.url)
-        log("events", ", ".join(result.webhook.events))
-        pass_test("webhooks.get() — returns webhook without secret")
-    except Exception as err:
-        fail_test("webhooks.get()", err)
-
-    try:
-        r = pq.webhooks.test()
-        if not r.get("message"): raise AssertionError("missing message")
-        log("message", r["message"])
-        pass_test("webhooks.test() — test event dispatched")
-    except Exception as err:
-        fail_test("webhooks.test()", err)
-
-    try:
-        pq.webhooks.delete()
-        result = pq.webhooks.get()
-        if result.webhook is not None:
-            raise AssertionError("webhook should be None after delete")
-        pass_test("webhooks.delete() — webhook removed, get() returns None")
-    except Exception as err:
-        fail_test("webhooks.delete()", err)
+    section("10 · webhooks — skipped (dashboard-only)")
+    print(f"  [2mℹ Webhook management is dashboard-only. Configure at app.fipsign.dev[0m")
+    print(f"  [2m  Webhooks fire automatically on sign(), verify(), revoke() events.[0m")
 
     # ─── 11 Distinct signatures for identical payloads ───────────────────────
     section("11 · Distinct signatures for identical payloads")
@@ -515,56 +429,9 @@ def run() -> None:
         fail_test("distinct signatures test", err)
 
     # ─── 12 Webhook delivery confirmation ────────────────────────────────────
-    section("12 · Webhook delivery confirmation")
-    try:
-        try:
-            pq.webhooks.delete()
-        except Exception:
-            pass
-        pq.webhooks.register(url=WEBHOOK_URL, events=["token.signed"])
-
-        unique_sub = f"webhook_delivery_test_{int(time.time() * 1000)}"
-        pq.sign(unique_sub, expires_in_seconds=300)
-
-        print(f"  {DIM}Waiting 3 seconds for webhook delivery...{RESET}")
-        time.sleep(3)
-
-        wh_resp = _requests.get(
-            f"https://webhook.site/token/{WEBHOOK_SITE_TOKEN}/requests",
-            params={"sorting": "newest", "per_page": 5},
-            headers={"Accept": "application/json"},
-        )
-        if not wh_resp.ok:
-            raise AssertionError(f"webhook.site API returned {wh_resp.status_code}")
-
-        wh_data       = wh_resp.json()
-        requests_list = wh_data.get("data", [])
-
-        if not requests_list:
-            raise AssertionError("no requests received at webhook.site")
-
-        found = None
-        for req in requests_list:
-            try:
-                body = req["content"] if isinstance(req["content"], dict) else json.loads(req["content"])
-                if body.get("event") == "token.signed" and body.get("data", {}).get("sub") == unique_sub:
-                    found = body
-                    break
-            except Exception:
-                continue
-
-        if found is None:
-            raise AssertionError(f'event for sub "{unique_sub}" not found in recent requests')
-
-        log("event",     found["event"])
-        log("sub",       found["data"]["sub"])
-        log("timestamp", str(found.get("timestamp")))
-        log("delivered", "yes ✓")
-        pass_test("webhook delivered and confirmed — event arrived with correct payload")
-
-        pq.webhooks.delete()
-    except Exception as err:
-        fail_test("webhook delivery confirmation", err)
+    section("12 · Webhook delivery + HMAC — skipped (dashboard-only)")
+    print(f"  [2mℹ Webhooks are configured from the dashboard, not via SDK.[0m")
+    print(f"  [2m  Verify HMAC con verify_webhook_signature() de fipsign.middleware.[0m")
 
     # ─── 13 generate_key_pair() ──────────────────────────────────────────────
     section("13 · generate_key_pair()")

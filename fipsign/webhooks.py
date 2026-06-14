@@ -1,126 +1,47 @@
 """
-Webhooks sub-client — mirrors pq.webhooks.* from the JS SDK.
-Accessed via pq.webhooks.register(...) etc.
+Webhooks — dashboard-only.
+
+Webhook management (register, get, delete, test) is performed from the
+FIPSign dashboard at https://app.fipsign.dev.  It requires a session
+cookie, not an API key, so it is not part of the SDK.
+
+This module is kept for the webhook-signature verification helper
+(verify_webhook_signature) which lives in fipsign/middleware.py and is
+still fully supported.
+
+Event types that FIPSign can deliver to your endpoint:
+  token.signed  |  token.rejected  |  token.revoked
+  limit.warning  |  limit.reached
+
+Each POST from FIPSign includes the headers:
+  X-PQAuth-Event       — event type string
+  X-PQAuth-Signature   — sha256=<hmac-sha256-hex>
+  X-PQAuth-Timestamp   — Unix timestamp
+
+Verify incoming requests:
+
+    from fipsign.middleware import verify_webhook_signature
+
+    # Flask
+    @app.route("/webhooks/fipsign", methods=["POST"])
+    def webhook():
+        from flask import request
+        sig = request.headers.get("X-PQAuth-Signature", "")
+        if not verify_webhook_signature(request.data, sig, WEBHOOK_SECRET):
+            return "Invalid signature", 401
+        event = request.json
+        # handle event["event"] ...
+        return "ok", 200
+
+    # FastAPI
+    from fastapi import Request
+    @app.post("/webhooks/fipsign")
+    async def webhook(request: Request):
+        body = await request.body()
+        sig  = request.headers.get("X-PQAuth-Signature", "")
+        if not verify_webhook_signature(body, sig, WEBHOOK_SECRET):
+            raise HTTPException(status_code=401, detail="Invalid signature")
+        event = await request.json()
+        # handle event["event"] ...
+        return "ok"
 """
-
-from __future__ import annotations
-from typing import TYPE_CHECKING, List, Optional
-
-from .types import WebhookEvent, WebhookGetResult, WebhookInfo, WebhookResult
-
-if TYPE_CHECKING:
-    from .client import PQAuth
-
-
-class Webhooks:
-    """
-    Manage webhook configuration for real-time event notifications.
-
-    Events: token.signed · token.rejected · token.revoked · limit.warning · limit.reached
-
-    Usage
-    -----
-    pq = PQAuth("pqa_your_key")
-
-    result = pq.webhooks.register(
-        url="https://yourapp.com/webhooks/fipsign",
-        events=["limit.warning", "limit.reached"],
-    )
-    print(result.webhook.secret)   # store this — shown only once
-
-    config = pq.webhooks.get()     # config.webhook is None if not registered
-    pq.webhooks.test()             # send a test event
-    pq.webhooks.delete()
-    """
-
-    def __init__(self, client: "PQAuth") -> None:
-        self._client = client
-
-    def register(
-        self,
-        url: str,
-        events: Optional[List[str]] = None,
-    ) -> WebhookResult:
-        """
-        Register (or update) a webhook endpoint.
-
-        The ``secret`` field in the response is shown only once — store it
-        securely to verify incoming webhook signatures.
-
-        Re-registering an existing webhook updates the URL and events but
-        preserves the original secret. To rotate the secret, delete the
-        webhook and register a new one.
-
-        Parameters
-        ----------
-        url : str
-            HTTPS endpoint that will receive POST requests.
-        events : list[str], optional
-            One or more of: token.signed, token.rejected, token.revoked,
-            limit.warning, limit.reached. Defaults to all events if omitted.
-
-        Returns
-        -------
-        WebhookResult
-            .webhook.url, .webhook.events, .webhook.secret (shown once)
-        """
-        body: dict = {"url": url}
-        if events is not None:
-            body["events"] = events
-
-        data = self._client._request("POST", "/webhooks", json=body)
-        wh   = data["webhook"]
-        return WebhookResult(
-            webhook=WebhookInfo(
-                url=wh["url"],
-                events=wh["events"],
-                secret=wh.get("secret"),
-            )
-        )
-
-    def get(self) -> WebhookGetResult:
-        """
-        Get the current webhook configuration.
-
-        Returns
-        -------
-        WebhookGetResult
-            .webhook is None if no webhook has been registered yet.
-            The secret is never returned by get() — only by register().
-            .webhook.active and .webhook.createdAt are populated from the
-            server response.
-        """
-        data = self._client._request("GET", "/webhooks")
-        wh   = data.get("webhook")
-        if wh is None:
-            return WebhookGetResult(webhook=None)
-        return WebhookGetResult(
-            webhook=WebhookInfo(
-                url=wh["url"],
-                events=wh["events"],
-                active=wh.get("active"),
-                createdAt=wh.get("createdAt"),
-            )
-        )
-
-    def delete(self) -> dict:
-        """
-        Delete the current webhook configuration.
-
-        Returns
-        -------
-        dict
-            {"success": True}
-        """
-        return self._client._request("DELETE", "/webhooks")
-
-    def test(self) -> dict:
-        """
-        Send a test event to the registered webhook endpoint.
-
-        Returns
-        -------
-        dict
-            {"success": True, "message": "..."}
-        """
-        return self._client._request("POST", "/webhooks/test")

@@ -27,11 +27,7 @@ from .types import (
     UsageCurrent,
     UsageResult,
     VerifyResult,
-    WebhookGetResult,
-    WebhookInfo,
-    WebhookResult,
 )
-from .webhooks import Webhooks
 from .ca import CA
 
 DEFAULT_BASE_URL = "https://api.fipsign.dev"
@@ -106,7 +102,6 @@ class PQAuth:
                 "X-API-Key": self._api_key,
             }
         )
-        self.webhooks = Webhooks(self)
         self.ca = CA(self)
 
     # ── Private: HTTP wrapper ─────────────────────────────────────────────────

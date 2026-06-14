@@ -255,27 +255,9 @@ for pack in u.packs:
 
 **Events:** `token.signed` · `token.rejected` · `token.revoked` · `limit.warning` · `limit.reached`
 
-```python
-# Register
-result = pq.webhooks.register(
-    url="https://yourapp.com/webhooks/fipsign",
-    events=["limit.warning", "limit.reached", "token.revoked"],
-)
-print(result.webhook.secret)  # store this — shown only once
+Webhook configuration is managed from the dashboard at [app.fipsign.dev](https://app.fipsign.dev). Go to your project → Webhooks → enter your endpoint URL and select the events you want to receive. The secret is shown once at registration time — store it securely.
 
-# Send a test event to confirm your endpoint is reachable
-pq.webhooks.test()
-
-# Get current config (secret is never returned after registration)
-config = pq.webhooks.get()
-if config.webhook is None:
-    print("No webhook configured")
-
-# Delete
-pq.webhooks.delete()
-```
-
-Re-registering an existing webhook updates the URL and events but preserves the original secret. To rotate the secret, delete and re-register.
+Webhooks fire automatically when you call `sign()`, `verify()`, `revoke()`, or CA operations. No SDK method is needed to trigger them.
 
 ### Webhook event payloads
 

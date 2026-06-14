@@ -11,8 +11,6 @@ publish:
 # Run integration tests
 test:
 	FIPSIGN_API_KEY=$$FIPSIGN_API_KEY \
-	WEBHOOK_URL=$$WEBHOOK_URL \
-	WEBHOOK_SITE_TOKEN=$$WEBHOOK_SITE_TOKEN \
 	python tests/test_sdk.py
 
 # Remove build artifacts
