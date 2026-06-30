@@ -10,8 +10,10 @@ This module is kept for the webhook-signature verification helper
 still fully supported.
 
 Event types that FIPSign can deliver to your endpoint:
-  token.signed  |  token.rejected  |  token.revoked
-  limit.warning  |  limit.reached
+  token.signed    token.verified   token.rejected   token.revoked
+  token.expired   limit.warning    limit.reached
+  ca.issued       ca.revoked       key.rotated
+  login           logout
 
 Each POST from FIPSign includes the headers:
   X-PQAuth-Event       — event type string

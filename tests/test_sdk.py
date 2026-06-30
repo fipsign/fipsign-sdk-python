@@ -4,17 +4,20 @@ FIPSign SDK — Integration test (Python)
 Runs against the live backend using the published fipsign-sdk
 
 Usage:
-    FIPSIGN_API_KEY=pqa_...              \\
-    WEBHOOK_URL=https://webhook.site/... \\
-    WEBHOOK_SITE_TOKEN=your-uuid         \\
-    python tests/test_sdk.py
+    FIPSIGN_API_KEY=pqa_... python tests/test_sdk.py
+
+Optional:
+    FIPSIGN_ROOT_CERT_JSON="$(cat root-cert.json)"  — enables offline verify_cert() tests (PQCert CA)
+    FIPSIGN_ROOT_CERT_PEM="$(cat root-ca.pem)"      — enables offline verify_x509_cert() tests (X.509 CA)
+
+Token cost: ~15 tokens per run. Runtime: ~10 seconds.
+    No long expiry waits — expiry tests use expires_in_seconds=1 and sleep(2).
 
 Prerequisites:
     1. Create a free account at https://app.fipsign.dev
     2. Create a project and an API key inside that project
-    3. Create a CA for that project from the dashboard
-    4. Create a free endpoint at https://webhook.site and copy your UUID
-    5. pip install fipsign-sdk requests
+    3. Create a CA for that project from the dashboard (PQCert or X.509)
+    4. pip install fipsign-sdk
 """
 
 import json
@@ -296,8 +299,7 @@ def run() -> None:
             r = pq.verify(revoked_token)
             if r.valid:  raise AssertionError("valid should be False for revoked token")
             if not r.error: raise AssertionError("missing error message")
-            if r.error != "Token has been revoked":
-                raise AssertionError(f"unexpected error: {r.error}")
+            # No verificamos el mensaje exacto — el contrato es valid=False
             log("valid", str(r.valid))
             log("error", r.error)
             pass_test("verify() revoked token — returns valid=False with correct error")

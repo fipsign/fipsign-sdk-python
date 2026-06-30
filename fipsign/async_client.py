@@ -20,6 +20,7 @@ except ImportError:
     )
 
 from .errors import PQAuthError
+from .utils import canonicalize_for_signing
 from .types import (
     CaGetCertMeta,
     CaGetCertResult,
@@ -328,7 +329,6 @@ class AsyncCA:
         >>> if not result.valid:
         ...     raise PermissionError(result.error)
         """
-        import json as _json
         import time as _time
         import base64
 
@@ -347,16 +347,9 @@ class AsyncCA:
             if cert.expiresAt is not None and cert.expiresAt < now:
                 return VerifyCertResult(valid=False, error="Certificate has expired")
 
-            def sorted_keys_recursive(obj):
-                if isinstance(obj, list):
-                    return [sorted_keys_recursive(v) for v in obj]
-                if isinstance(obj, dict):
-                    return {k: sorted_keys_recursive(obj[k]) for k in sorted(obj.keys())}
-                return obj
-
             cert_dict = cert.to_dict()
             cert_dict.pop("signature", None)
-            canonical = _json.dumps(sorted_keys_recursive(cert_dict), separators=(",", ":"))
+            canonical = canonicalize_for_signing(cert_dict)
             msg_bytes = canonical.encode("utf-8")
 
             from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65PublicKey
@@ -719,8 +712,17 @@ class AsyncPQAuth:
 
     async def preload_public_key(self) -> str:
         """Fetch and return the server's ML-DSA-65 public key (base64)."""
-        resp = await self._http.get(f"{self._base_url}/public-key")
-        return resp.json()["publicKey"]
+        try:
+            resp = await self._http.get(f"{self._base_url}/public-key")
+            resp.raise_for_status()
+            data = resp.json()
+        except httpx.TimeoutException:
+            raise PQAuthError("Request timed out", "TIMEOUT")
+        except httpx.NetworkError as exc:
+            raise PQAuthError(f"Network error: {exc}", "NETWORK_ERROR")
+        if "publicKey" not in data:
+            raise PQAuthError("Public key response missing publicKey field", "NETWORK_ERROR")
+        return data["publicKey"]
 
     async def health(self) -> HealthResult:
         """

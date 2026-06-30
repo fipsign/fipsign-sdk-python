@@ -67,6 +67,7 @@ import base64
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from .errors import PQAuthError
+from .utils import canonicalize_for_signing
 from .types import (
     CaGetCertMeta,
     CaGetCertResult,
@@ -581,7 +582,6 @@ class CA:
         >>> if pq.ca.is_cert_revoked(device_cert, crl.crl):
         ...     raise PermissionError("Certificate revoked")
         """
-        import json as _json
         import time as _time
 
         from .types import VerifyCertResult
@@ -619,16 +619,9 @@ class CA:
             # All fields including meta are covered by the ML-DSA-65 signature.
             # Python equivalent: recursively sort all keys at every level,
             # no spaces (JSON.stringify default), UTF-8 encoding.
-            def sorted_keys_recursive(obj):
-                if isinstance(obj, list):
-                    return [sorted_keys_recursive(v) for v in obj]
-                if isinstance(obj, dict):
-                    return {k: sorted_keys_recursive(obj[k]) for k in sorted(obj.keys())}
-                return obj
-
             cert_dict = cert.to_dict()
             cert_dict.pop("signature", None)          # exclude signature field
-            canonical = _json.dumps(sorted_keys_recursive(cert_dict), separators=(",", ":"))
+            canonical = canonicalize_for_signing(cert_dict)
             msg_bytes = canonical.encode("utf-8")
 
             # ── Signature verification ────────────────────────────────────────

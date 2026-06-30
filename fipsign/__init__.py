@@ -78,4 +78,8 @@ __all__ = [
     "VerifyCertResult",
 ]
 
-__version__ = "0.9.5"
+try:
+    from importlib.metadata import version as _version
+    __version__ = _version("fipsign-sdk")
+except Exception:
+    __version__ = "0.9.5"  # fallback si el paquete no está instalado

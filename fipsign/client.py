@@ -404,11 +404,19 @@ class PQAuth:
         --------
         >>> pub_key_b64 = pq.preload_public_key()
         """
-        resp = self._session.get(
-            f"{self._base_url}/public-key",
-            timeout=self._timeout,
-        )
-        data = resp.json()
+        try:
+            resp = self._session.get(
+                f"{self._base_url}/public-key",
+                timeout=self._timeout,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Timeout:
+            raise PQAuthError("Request timed out", "TIMEOUT")
+        except ConnectionError as exc:
+            raise PQAuthError(f"Network error: {exc}", "NETWORK_ERROR")
+        if "publicKey" not in data:
+            raise PQAuthError("Public key response missing publicKey field", "NETWORK_ERROR")
         return data["publicKey"]
 
     # ── health() ──────────────────────────────────────────────────────────────
