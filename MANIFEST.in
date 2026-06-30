@@ -1,0 +1,5 @@
+# Exclude tests from the source distribution (sdist).
+# The test file lives in the GitHub repo — download it from there.
+# https://github.com/fipsign/fipsign-sdk-python/blob/main/tests/test_sdk.py
+recursive-exclude tests *
+exclude tests

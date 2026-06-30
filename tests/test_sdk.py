@@ -10,8 +10,8 @@ Optional:
     FIPSIGN_ROOT_CERT_JSON="$(cat root-cert.json)"  — enables offline verify_cert() tests (PQCert CA)
     FIPSIGN_ROOT_CERT_PEM="$(cat root-ca.pem)"      — enables offline verify_x509_cert() tests (X.509 CA)
 
-Token cost: ~15 tokens per run. Runtime: ~10 seconds.
-    No long expiry waits — expiry tests use expires_in_seconds=1 and sleep(2).
+Token cost: ~25 tokens per run. Runtime: ~3-4 minutes.
+    Includes 2 expiry tests that sign with expires_in_seconds=60 and wait 62 seconds each.
 
 Prerequisites:
     1. Create a free account at https://app.fipsign.dev
@@ -316,8 +316,9 @@ def run() -> None:
             fail_test("revoke() idempotent", err)
 
     try:
-        r = pq.sign("expire_revoke_test", expires_in_seconds=1)
-        time.sleep(2)
+        r = pq.sign("expire_revoke_test", expires_in_seconds=60)
+        print(f"  \033[2mWaiting 62 seconds for token to expire...\033[0m")
+        time.sleep(62)
         pq.revoke(r.token, "revoke after expiry")
         fail_test("revoke() expired token returns 400", "should have raised")
     except PQAuthError as err:
@@ -331,10 +332,10 @@ def run() -> None:
     # ─── 06 Expired token ────────────────────────────────────────────────────
     section("06 · Expired token")
     try:
-        r = pq.sign("expiry_test", expires_in_seconds=1)
-        pass_test("sign() with expires_in_seconds=1 — token created")
-        print(f"  {DIM}Waiting 2 seconds for token to expire...{RESET}")
-        time.sleep(2)
+        r = pq.sign("expiry_test", expires_in_seconds=60)
+        pass_test("sign() with expires_in_seconds=60 — token created")
+        print(f"  {DIM}Waiting 62 seconds for token to expire...{RESET}")
+        time.sleep(62)
         v = pq.verify(r.token)
         if v.valid:     raise AssertionError("valid should be False for expired token")
         if not v.error: raise AssertionError("missing error message")
