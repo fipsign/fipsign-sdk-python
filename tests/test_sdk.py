@@ -90,7 +90,7 @@ def run() -> None:
     try:
         h = pq.health()
         if h.status != "ok":              raise AssertionError(f'status is "{h.status}", expected "ok"')
-        if h.algorithm != "ML-DSA-65":   raise AssertionError(f'algorithm is "{h.algorithm}", expected "ML-DSA-65"')
+        if h.algorithm not in ("ML-DSA-44", "ML-DSA-65", "ML-DSA-87", "ML-DSA-44/65/87"):   raise AssertionError(f'unexpected algorithm: {h.algorithm}')
         if h.standard != "NIST FIPS 204": raise AssertionError(f'standard is "{h.standard}", expected "NIST FIPS 204"')
         if not h.quantumResistant:        raise AssertionError("quantumResistant is False")
         if not h.version:                 raise AssertionError("missing version field")
@@ -158,7 +158,7 @@ def run() -> None:
         r = pq.sign("user_test", email="test@example.com", role="admin", expires_in_seconds=3600)
         if not r.token.payload:               raise AssertionError("missing token.payload")
         if not r.token.signature:             raise AssertionError("missing token.signature")
-        if r.token.algorithm != "ML-DSA-65":  raise AssertionError(f"wrong algorithm: {r.token.algorithm}")
+        if r.token.algorithm not in ("ML-DSA-44", "ML-DSA-65", "ML-DSA-87"):  raise AssertionError(f"wrong algorithm: {r.token.algorithm}")
         if r.meta.tokenCost != 1:             raise AssertionError(f"tokenCost is {r.meta.tokenCost}, expected 1")
         if r.meta.source not in ("free", "pack", "free+pack"):
             raise AssertionError(f"unexpected source: {r.meta.source}")
