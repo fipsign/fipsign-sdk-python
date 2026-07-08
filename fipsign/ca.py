@@ -69,6 +69,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 from .errors import PQAuthError
 from .utils import canonicalize_for_signing
 from .types import (
+    CaExpiry,
     CaGetCertMeta,
     CaGetCertResult,
     CaGetCrlResult,
@@ -310,6 +311,7 @@ class CA:
                 algorithm = m["algorithm"],
                 standard  = m["standard"],
                 format    = m.get("format", "pqcert"),
+                caExpiry  = CaExpiry(**m["caExpiry"]) if m.get("caExpiry") else None,
             ),
             usage = CaIssueUsage(
                 freeRemaining  = u["freeRemaining"],
@@ -608,6 +610,13 @@ class CA:
 
             # ── Expiry check ──────────────────────────────────────────────────
             now = int(_time.time())
+
+            if root_cert.expiresAt is not None and root_cert.expiresAt < now:
+                return VerifyCertResult(
+                    valid=False,
+                    error="Root CA certificate has expired",
+                )
+
             if cert.expiresAt is not None and cert.expiresAt < now:
                 return VerifyCertResult(
                     valid=False,
@@ -722,6 +731,12 @@ class CA:
                 return VerifyCertResult(
                     valid=False,
                     error="Certificate has expired",
+                )
+
+            if root_cert.not_valid_after_utc < now:
+                return VerifyCertResult(
+                    valid=False,
+                    error="Root CA certificate has expired",
                 )
 
             # ── Verify leaf certificate algorithm OID ─────────────────────────

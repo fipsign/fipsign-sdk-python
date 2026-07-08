@@ -272,6 +272,17 @@ def _parse_certificate(raw: Any) -> Union[PQCert, str]:
 
 
 @dataclass
+class CaExpiry:
+    """
+    Present in CaIssueMeta when the requested expiresInSeconds was truncated
+    to fit within the CA root's remaining lifetime (RFC 5280 compliance).
+    """
+    truncated:                 bool
+    requestedExpiresInSeconds: int
+    resolvedExpiresInSeconds:  int
+
+
+@dataclass
 class CaIssueMeta:
     certId:    str
     caId:      str
@@ -281,6 +292,7 @@ class CaIssueMeta:
     algorithm: str
     standard:  str
     format:    str = "pqcert"  # "pqcert" | "x509"
+    caExpiry:  Optional["CaExpiry"] = None  # present only when lifetime was truncated
 
 
 @dataclass
@@ -418,10 +430,12 @@ class VerifyCertResult:
             'Expected a CA_CERT certificate'
             'Expected a CA_ROOT certificate'
             'Certificate was not issued by this CA (caId mismatch)'
+            'Root CA certificate has expired'
             'Certificate has expired'
             'Invalid certificate signature'
 
         From ca.verify_x509_cert() (X.509):
+            'Root CA certificate has expired'
             'Certificate has expired'
             'Invalid certificate signature — not signed by this root CA'
             'Unsupported signature algorithm: <OID>. Expected ML-DSA-65 (2.16.840.1.101.3.4.3.18)'
