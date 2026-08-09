@@ -978,6 +978,51 @@ def run() -> None:
     except Exception as err:
         fail_test("ca.get_cert() after revocation", err)
 
+    # ─── 15 zes.sign() / zes.verify() ────────────────────────────────────────
+    section("15 · zes.sign() / zes.verify()")
+    try:
+        import base64
+        data = {"patient": "Jane Doe", "diagnosis": "confidential", "record_id": "MR-2026-4491"}
+
+        r = pq.zes.sign(data)
+        if not r.token.payload: raise AssertionError("missing token.payload")
+        if not r.hash:          raise AssertionError("missing hash")
+        if len(r.hash) != 64:   raise AssertionError(f"hash is {len(r.hash)} chars, expected 64 (sha256 hex)")
+        decoded_sub = json.loads(base64.b64decode(r.token.payload))["sub"]
+        if decoded_sub != "zes:" + r.hash:
+            raise AssertionError(f'token sub is "{decoded_sub}", expected "zes:{r.hash}"')
+        log("hash", r.hash)
+        log("sub",  decoded_sub)
+        pass_test("zes.sign() — hashes data locally and signs zes:<hash>")
+
+        v = pq.zes.verify(r.token, data)
+        if not v.valid:       raise AssertionError("valid is False")
+        if not v.dataMatches: raise AssertionError("dataMatches should be True for original data")
+        log("valid",       str(v.valid))
+        log("dataMatches", str(v.dataMatches))
+        pass_test("zes.verify() — original data matches token hash")
+
+        tampered_data = {**data, "diagnosis": "tampered"}
+        v_tampered = pq.zes.verify(r.token, tampered_data)
+        if not v_tampered.valid:   raise AssertionError("signature itself should still be cryptographically valid")
+        if v_tampered.dataMatches: raise AssertionError("dataMatches should be False for tampered data")
+        log("valid (tampered data)",       str(v_tampered.valid))
+        log("dataMatches (tampered data)", str(v_tampered.dataMatches))
+        pass_test("zes.verify() — tampered data correctly reported as not matching")
+
+        # Misma data logica, distinto orden de keys — el hash debe ser identico
+        # (canonicalizacion recursiva y deterministica, independiente del orden).
+        reordered = {"record_id": data["record_id"], "diagnosis": data["diagnosis"], "patient": data["patient"]}
+        r2 = pq.zes.sign(reordered)
+        if r2.hash != r.hash: raise AssertionError("hash differs for same data with reordered keys — canonicalization is not deterministic")
+        log("hash (reordered keys)", r2.hash)
+        pass_test("zes.sign() — deterministic hash regardless of key order")
+
+        pq.revoke(r.token, "zes integration test cleanup")
+        pass_test("revoke() on a zes token — works exactly like any other token, no zes-specific call needed")
+    except Exception as err:
+        fail_test("zes.sign()/zes.verify()", err)
+
     # ─── Summary ─────────────────────────────────────────────────────────────
     total = passed + failed
     print("\n" + "─" * 48)
