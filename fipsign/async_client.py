@@ -20,7 +20,7 @@ except ImportError:
     )
 
 from .errors import PQAuthError
-from .utils import canonicalize_for_signing
+from .utils import canonicalize_for_signing, zes_hash
 from .types import (
     CaGetCertMeta,
     CaGetCertResult,
@@ -44,6 +44,8 @@ from .types import (
     UsageResult,
     VerifyResult,
     VerifyCertResult,
+    ZesSignResult,
+    ZesVerifyResult,
     _parse_certificate,
 )
 
@@ -491,6 +493,76 @@ class AsyncCA:
         return any(entry.certId == cert_id for entry in crl)
 
 
+# ─── AsyncZes ─────────────────────────────────────────────────────────────────
+
+class AsyncZes:
+    """
+    Async ZES (Zero-Exposure Signing) sub-client.
+
+    Usage
+    -----
+    pq = AsyncPQAuth("pqa_your_key")
+
+    result = await pq.zes.sign({"patient": "Jane Doe", "diagnosis": "confidential"})
+    check  = await pq.zes.verify(result.token, {"patient": "Jane Doe", "diagnosis": "confidential"})
+    if not check.valid or not check.dataMatches:
+        raise PermissionError("invalid or tampered")
+    """
+
+    def __init__(self, client: "AsyncPQAuth") -> None:
+        self._client = client
+
+    async def sign(self, data: Any, *, expires_in_seconds: Optional[int] = None) -> ZesSignResult:
+        """
+        Hash ``data`` locally with SHA-256 (keys sorted recursively —
+        nested objects too) and sign only the hash. Costs 1 token, same
+        as sign().
+
+        Examples
+        --------
+        >>> result = await pq.zes.sign({"patient": "Jane Doe", "diagnosis": "confidential"})
+        """
+        digest = zes_hash(data)
+
+        kwargs: Dict[str, Any] = {"zes": True}
+        if expires_in_seconds is not None:
+            kwargs["expires_in_seconds"] = expires_in_seconds
+
+        result = await self._client.sign("zes:" + digest, **kwargs)
+
+        return ZesSignResult(
+            token=result.token,
+            hash=digest,
+            meta=result.meta,
+            usage=result.usage,
+        )
+
+    async def verify(self, token: PQToken, data: Any) -> ZesVerifyResult:
+        """
+        Re-hash ``data`` locally and verify the token, confirming the
+        hash inside the token matches. ``data`` is never sent to the API.
+
+        Examples
+        --------
+        >>> check = await pq.zes.verify(token, {"patient": "Jane Doe", "diagnosis": "confidential"})
+        """
+        digest = zes_hash(data)
+        result = await self._client.verify(token)
+
+        data_matches = bool(
+            result.valid
+            and result.payload is not None
+            and result.payload.get("sub") == "zes:" + digest
+        )
+
+        return ZesVerifyResult(
+            valid=result.valid,
+            dataMatches=data_matches,
+            payload=result.payload,
+            error=result.error,
+        )
+
+
 # ─── AsyncPQAuth ──────────────────────────────────────────────────────────────
 
 class AsyncPQAuth:
@@ -534,6 +606,7 @@ class AsyncPQAuth:
             timeout=timeout,
         )
         self.ca       = AsyncCA(self)
+        self.zes      = AsyncZes(self)
 
     async def __aenter__(self) -> "AsyncPQAuth":
         return self

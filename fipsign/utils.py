@@ -4,6 +4,7 @@ Not part of the public API.
 """
 
 from __future__ import annotations
+import hashlib
 import json
 from typing import Any
 
@@ -26,3 +27,15 @@ def canonicalize_for_signing(obj: Any) -> str:
         return o
 
     return json.dumps(sorted_keys_recursive(obj), separators=(",", ":"))
+
+
+def zes_hash(data: Any) -> str:
+    """
+    SHA-256 hex digest of the canonicalized form of ``data``.
+
+    Used by Zes.sign()/Zes.verify() and AsyncZes.sign()/AsyncZes.verify()
+    (Zero-Exposure Signing). Byte-identical to the JS SDK's zes hash and
+    the manual recipe documented in the REST guide (section 03b), since
+    both use the same recursive key-sort as canonicalize_for_signing().
+    """
+    return hashlib.sha256(canonicalize_for_signing(data).encode()).hexdigest()

@@ -90,6 +90,44 @@ class VerifyResult:
     error:   Optional[str]            = None
 
 
+# ─── zes ──────────────────────────────────────────────────────────────────────
+
+@dataclass
+class ZesSignResult:
+    """
+    Returned by zes.sign() / AsyncZes.sign(). Same fields as SignResult,
+    plus the SHA-256 hex digest that was actually signed.
+    """
+    token: PQToken
+    hash:  str
+    meta:  SignMeta
+    usage: SignUsage
+
+
+@dataclass
+class ZesVerifyResult:
+    """
+    Returned by zes.verify() / AsyncZes.verify(). Same fields as
+    VerifyResult, plus whether the supplied data matches the token's hash.
+
+    Attributes
+    ----------
+    valid : bool
+        True if the token itself is cryptographically valid, unexpired,
+        and not revoked (same meaning as VerifyResult.valid).
+    dataMatches : bool
+        True if the data passed to verify() hashes to the same value
+        stored in the token. False if the data was altered — even when
+        valid is True (the token itself can be legitimate while the data
+        given to verify() does not match what was originally signed).
+    payload, error : same as VerifyResult.
+    """
+    valid:       bool
+    dataMatches: bool
+    payload:     Optional[Dict[str, Any]] = None
+    error:       Optional[str]            = None
+
+
 # ─── revoke() ─────────────────────────────────────────────────────────────────
 
 @dataclass

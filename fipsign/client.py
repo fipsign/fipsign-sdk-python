@@ -29,6 +29,7 @@ from .types import (
     VerifyResult,
 )
 from .ca import CA
+from .zes import Zes
 
 DEFAULT_BASE_URL = "https://api.fipsign.dev"
 DEFAULT_TIMEOUT = 10  # seconds
@@ -103,6 +104,7 @@ class PQAuth:
             }
         )
         self.ca = CA(self)
+        self.zes = Zes(self)
 
     # ── Private: HTTP wrapper ─────────────────────────────────────────────────
 

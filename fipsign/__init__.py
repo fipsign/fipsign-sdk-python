@@ -29,6 +29,8 @@ from .types import (
     SignResult, SignMeta, SignUsage,
     # verify()
     VerifyResult,
+    # zes
+    ZesSignResult, ZesVerifyResult,
     # revoke()
     RevokeResult,
     # usage()
@@ -61,6 +63,8 @@ __all__ = [
     "SignResult", "SignMeta", "SignUsage",
     # verify()
     "VerifyResult",
+    # zes
+    "ZesSignResult", "ZesVerifyResult",
     # revoke()
     "RevokeResult",
     # usage()
