@@ -15,8 +15,9 @@ Key pair generation:
   secretKey: 32-byte seed (base64) — see KeyPairResult docstring for signing usage.
 """
 
+from typing import TYPE_CHECKING
+
 from .client import PQAuth
-from .async_client import AsyncPQAuth
 from .errors import PQAuthError
 from .middleware import flask_middleware, fastapi_middleware
 from .ca import generate_key_pair
@@ -47,6 +48,14 @@ from .types import (
     CaGetCrlResult, CrlEntry,
     VerifyCertResult,
 )
+
+if TYPE_CHECKING:
+    # Solo se importa para type checkers estaticos (mypy, autocompletado).
+    # En runtime, AsyncPQAuth se importa de forma perezosa via __getattr__
+    # mas abajo, para que `import fipsign` / `from fipsign import PQAuth`
+    # funcionen sin httpx instalado -- httpx solo hace falta si de verdad
+    # se usa AsyncPQAuth.
+    from .async_client import AsyncPQAuth
 
 __all__ = [
     "PQAuth",
@@ -81,6 +90,20 @@ __all__ = [
     "CaGetCrlResult", "CrlEntry",
     "VerifyCertResult",
 ]
+
+
+def __getattr__(name: str):
+    """
+    Import perezoso a nivel de modulo (PEP 562). AsyncPQAuth exige httpx
+    (dependencia opcional -- pip install fipsign-sdk[async]); importarla
+    sin condicion aca rompia `import fipsign` para quien solo usa el
+    cliente sync y nunca instalo el extra [async].
+    """
+    if name == "AsyncPQAuth":
+        from .async_client import AsyncPQAuth
+        return AsyncPQAuth
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 try:
     from importlib.metadata import version as _version
