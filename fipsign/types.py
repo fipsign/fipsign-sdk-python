@@ -519,3 +519,133 @@ class KeyPairResult:
     """
     publicKey: str  # base64(1952 bytes)
     secretKey: str  # base64(32 bytes — seed form, see docstring)
+
+
+# ─── Mandate ──────────────────────────────────────────────────────────────────
+#
+# Bounded, revocable authorization for AI agents, IoT devices, and automated
+# services. Two layers:
+#
+#   Immutable — covered by the ML-DSA signature: agentId, issuedBy,
+#               scopeOriginal, budgetTotal, expiresAt. Cannot change.
+#   Mutable   — stored server-side: scopeCurrent, budgetConsumed, status.
+#               Updated via narrow()/suspend()/resume()/revoke() without
+#               invalidating the token.
+#
+# See the developer guide's Mandate section for the full explanation of
+# the lifecycle and budget semantics.
+
+MandateStatus = Literal["active", "suspended", "revoked"]
+
+
+@dataclass
+class Mandate:
+    """
+    Full state of a mandate, as returned by mandate.get() and mandate.list().
+    Not the same shape as the ``mandate`` field on mandate.emit()'s result —
+    see MandateEmitMandate for that.
+    """
+    id:               str
+    agentId:          str
+    issuedBy:         str
+    scopeOriginal:    List[str]
+    scopeCurrent:     List[str]
+    budgetTotal:      int
+    budgetConsumed:   int
+    budgetRemaining:  int
+    status:           str  # MandateStatus
+    issuedAt:         int
+    expiresAt:        int
+    expiresInSeconds: int
+    updatedAt:        int
+
+
+def _parse_mandate(d: Dict[str, Any]) -> "Mandate":
+    """Internal helper — parses a mandate dict from get()/list() into Mandate."""
+    return Mandate(
+        id=d["id"], agentId=d["agentId"], issuedBy=d["issuedBy"],
+        scopeOriginal=d["scopeOriginal"], scopeCurrent=d["scopeCurrent"],
+        budgetTotal=d["budgetTotal"], budgetConsumed=d["budgetConsumed"],
+        budgetRemaining=d["budgetRemaining"], status=d["status"],
+        issuedAt=d["issuedAt"], expiresAt=d["expiresAt"],
+        expiresInSeconds=d["expiresInSeconds"], updatedAt=d["updatedAt"],
+    )
+
+
+@dataclass
+class MandateEmitMandate:
+    """The ``mandate`` field on MandateEmitResult — lighter than Mandate."""
+    id:          str
+    agentId:     str
+    issuedBy:    str
+    scope:       List[str]
+    budgetTotal: int
+    expiresAt:   int
+    status:      str  # MandateStatus
+    token:       PQToken
+
+
+@dataclass
+class MandateEmitUsage:
+    freeRemaining:  int
+    packRemaining:  int
+    totalRemaining: int
+    month:          str
+
+
+@dataclass
+class MandateEmitResult:
+    """Result of mandate.emit(). Cost: 2 tokens."""
+    mandate: MandateEmitMandate
+    usage:   MandateEmitUsage
+
+
+@dataclass
+class MandateVerifyResult:
+    """
+    Returned by mandate.verify(). **Never raises** — every failure,
+    including a denied check and an invalid API key, comes back as
+    result="denied", never an exception.
+
+    Attributes
+    ----------
+    result : str
+        "granted" or "denied".
+    reason : str | None
+        Set when denied: "scope_not_authorized", "budget_exhausted",
+        "mandate_suspended", "mandate_revoked", "mandate_expired", or
+        the real backend error message (e.g. an invalid API key).
+    actionMatched, budgetRemaining, expiresInSeconds : set when granted.
+    authorizedScope : set when denied for scope_not_authorized.
+    budgetConsumedUnits, budgetTotalUnits : set when denied for budget_exhausted.
+    """
+    result:               str  # "granted" | "denied"
+    reason:               Optional[str]              = None
+    actionMatched:        Optional[str]               = None
+    budgetRemaining:      Optional[int]                = None
+    expiresInSeconds:     Optional[int]                 = None
+    authorizedScope:      Optional[List[str]]            = None
+    budgetConsumedUnits:  Optional[int]                   = None
+    budgetTotalUnits:     Optional[int]                    = None
+    usage:                Optional[MandateEmitUsage]        = None
+
+
+@dataclass
+class MandatePatchResult:
+    """Result of narrow()/suspend()/resume()/revoke(). Free — no token cost."""
+    id:        str
+    status:    str  # MandateStatus
+    scope:     Optional[List[str]] = None
+    updatedAt: Optional[int]       = None
+    message:   Optional[str]       = None  # only set by suspend() on an already-suspended mandate
+
+
+@dataclass
+class MandateGetResult:
+    mandate: Mandate
+
+
+@dataclass
+class MandateListResult:
+    mandates: List[Mandate]
+    total:    int

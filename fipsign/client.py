@@ -30,6 +30,7 @@ from .types import (
 )
 from .ca import CA
 from .zes import Zes
+from .mandate import MandateClient
 
 DEFAULT_BASE_URL = "https://api.fipsign.dev"
 DEFAULT_TIMEOUT = 10  # seconds
@@ -105,6 +106,7 @@ class PQAuth:
         )
         self.ca = CA(self)
         self.zes = Zes(self)
+        self.mandate = MandateClient(self)
 
     # ── Private: HTTP wrapper ─────────────────────────────────────────────────
 

@@ -10,8 +10,9 @@ Optional:
     FIPSIGN_ROOT_CERT_JSON="$(cat root-cert.json)"  — enables offline verify_cert() tests (PQCert CA)
     FIPSIGN_ROOT_CERT_PEM="$(cat root-ca.pem)"      — enables offline verify_x509_cert() tests (X.509 CA)
 
-Token cost: ~25 tokens per run. Runtime: ~3-4 minutes.
+Token cost: ~29 tokens per run. Runtime: ~3-4 minutes.
     Includes 2 expiry tests that sign with expires_in_seconds=60 and wait 62 seconds each.
+    Mandate section (16): 1 emit + 3 granted verify() calls = 4 tokens (PATCH/GET/LIST are free).
 
 Prerequisites:
     1. Create a free account at https://app.fipsign.dev
@@ -1022,6 +1023,201 @@ def run() -> None:
         pass_test("revoke() on a zes token — works exactly like any other token, no zes-specific call needed")
     except Exception as err:
         fail_test("zes.sign()/zes.verify()", err)
+
+    section("16 · Mandate")
+
+    mandate_id = None
+    mandate_token = None
+
+    # 16.1 mandate.emit()
+    try:
+        r = pq.mandate.emit(
+            agent_id=f"agent_test_{int(time.time())}",
+            issued_by="sdk_integration_test",
+            scope=["read_tickets", "send_reply"],
+            budget_total=3,
+            expires_in_seconds=3600,
+        )
+        if not r.mandate.id:                 raise AssertionError("missing mandate.id")
+        if not r.mandate.token.payload:      raise AssertionError("missing mandate.token.payload")
+        if not r.mandate.token.signature:    raise AssertionError("missing mandate.token.signature")
+        if r.mandate.status != "active":     raise AssertionError(f'status is "{r.mandate.status}", expected "active"')
+        if r.mandate.budgetTotal != 3:       raise AssertionError(f"budgetTotal is {r.mandate.budgetTotal}, expected 3")
+        if r.mandate.scope != ["read_tickets", "send_reply"]:
+            raise AssertionError(f"scope is {r.mandate.scope}")
+        if not isinstance(r.usage.freeRemaining, int): raise AssertionError("missing usage.freeRemaining")
+        mandate_id = r.mandate.id
+        mandate_token = r.mandate.token
+        log("id",     mandate_id)
+        log("status", r.mandate.status)
+        log("scope",  ", ".join(r.mandate.scope))
+        pass_test("mandate.emit() — mandate created with correct fields")
+    except Exception as err:
+        fail_test("mandate.emit()", err)
+
+    # 16.2 mandate.verify() — granted, in-scope action
+    try:
+        if not mandate_id: raise AssertionError("skipped — mandate.emit() failed")
+        v = pq.mandate.verify(mandate_token, "read_tickets", 1)
+        if v.result != "granted": raise AssertionError(f'result is "{v.result}", expected "granted" (reason: {v.reason})')
+        if v.actionMatched != "read_tickets": raise AssertionError(f'actionMatched is "{v.actionMatched}"')
+        if v.budgetRemaining != 2: raise AssertionError(f"budgetRemaining is {v.budgetRemaining}, expected 2")
+        log("result",          v.result)
+        log("budgetRemaining", str(v.budgetRemaining))
+        pass_test("mandate.verify() — in-scope action granted, budget decremented correctly")
+    except Exception as err:
+        fail_test("mandate.verify() — granted", err)
+
+    # 16.3 mandate.verify() — denied, out-of-scope action (must NOT consume budget)
+    try:
+        if not mandate_id: raise AssertionError("skipped")
+        v = pq.mandate.verify(mandate_token, "delete_everything", 1)
+        if v.result != "denied": raise AssertionError(f'result is "{v.result}", expected "denied"')
+        if v.reason != "scope_not_authorized": raise AssertionError(f'reason is "{v.reason}", expected "scope_not_authorized"')
+        if not v.authorizedScope: raise AssertionError("missing authorizedScope on denial")
+        log("reason",          v.reason)
+        log("authorizedScope", ", ".join(v.authorizedScope))
+        pass_test("mandate.verify() — out-of-scope action denied with reason and authorizedScope")
+    except Exception as err:
+        fail_test("mandate.verify() — denied (scope)", err)
+
+    # 16.4 mandate.get() — budgetConsumed reflects ONLY the granted call, scope untouched
+    try:
+        if not mandate_id: raise AssertionError("skipped")
+        g = pq.mandate.get(mandate_id)
+        if g.mandate.budgetConsumed != 1:
+            raise AssertionError(f"budgetConsumed is {g.mandate.budgetConsumed}, expected 1 — a denied verify() must never consume budget")
+        if g.mandate.budgetRemaining != 2: raise AssertionError(f"budgetRemaining is {g.mandate.budgetRemaining}, expected 2")
+        if g.mandate.scopeCurrent != ["read_tickets", "send_reply"]:
+            raise AssertionError("scopeCurrent should be unchanged before narrow()")
+        log("budgetConsumed", str(g.mandate.budgetConsumed))
+        log("status",         g.mandate.status)
+        pass_test("mandate.get() — state reflects only the granted verify(), denial did not consume budget")
+    except Exception as err:
+        fail_test("mandate.get()", err)
+
+    # 16.5 mandate.list() — mandate appears in the project's list
+    try:
+        if not mandate_id: raise AssertionError("skipped")
+        l = pq.mandate.list()
+        found = next((m for m in l.mandates if m.id == mandate_id), None)
+        if not found: raise AssertionError(f"mandate {mandate_id} not found in list() (total: {l.total})")
+        log("total", str(l.total))
+        pass_test("mandate.list() — created mandate appears in the project list")
+    except Exception as err:
+        fail_test("mandate.list()", err)
+
+    # 16.6 mandate.narrow() — shrink scope, confirm the removed action is now denied
+    try:
+        if not mandate_id: raise AssertionError("skipped")
+        p = pq.mandate.narrow(mandate_id, ["read_tickets"])
+        if p.scope != ["read_tickets"]: raise AssertionError(f'scope after narrow is {p.scope}, expected ["read_tickets"]')
+        log("scope after narrow", ", ".join(p.scope))
+        pass_test("mandate.narrow() — scope correctly reduced")
+
+        v_removed = pq.mandate.verify(mandate_token, "send_reply", 1)
+        if v_removed.result != "denied": raise AssertionError(f'send_reply should be denied after narrow, got "{v_removed.result}"')
+        if v_removed.reason != "scope_not_authorized": raise AssertionError(f'reason is "{v_removed.reason}"')
+        pass_test("mandate.verify() — action removed by narrow() is correctly denied")
+    except Exception as err:
+        fail_test("mandate.narrow()", err)
+
+    # 16.7 Budget exhaustion — 2 remaining, cost=1 each, 3rd consuming call denied
+    try:
+        if not mandate_id: raise AssertionError("skipped")
+        v1 = pq.mandate.verify(mandate_token, "read_tickets", 1)
+        if v1.result != "granted" or v1.budgetRemaining != 1:
+            raise AssertionError(f"unexpected state after 1st consuming call: {v1}")
+        v2 = pq.mandate.verify(mandate_token, "read_tickets", 1)
+        if v2.result != "granted" or v2.budgetRemaining != 0:
+            raise AssertionError(f"unexpected state after 2nd consuming call: {v2}")
+        v3 = pq.mandate.verify(mandate_token, "read_tickets", 1)
+        if v3.result != "denied": raise AssertionError(f'3rd call should be denied — budget exhausted, got "{v3.result}"')
+        if v3.reason != "budget_exhausted": raise AssertionError(f'reason is "{v3.reason}", expected "budget_exhausted"')
+        if v3.budgetConsumedUnits != 3 or v3.budgetTotalUnits != 3:
+            raise AssertionError(f"budgetConsumedUnits/budgetTotalUnits mismatch: {v3}")
+        log("budgetConsumedUnits", str(v3.budgetConsumedUnits))
+        log("budgetTotalUnits",    str(v3.budgetTotalUnits))
+        pass_test("mandate.verify() — budget correctly exhausted after 3 granted calls, 4th denied")
+    except Exception as err:
+        fail_test("mandate — budget exhaustion", err)
+
+    # 16.8 mandate.suspend() → verify() denied specifically for suspension (checked before budget)
+    try:
+        if not mandate_id: raise AssertionError("skipped")
+        p = pq.mandate.suspend(mandate_id)
+        if p.status != "suspended": raise AssertionError(f'status is "{p.status}", expected "suspended"')
+        pass_test("mandate.suspend() — status set to suspended")
+
+        v = pq.mandate.verify(mandate_token, "read_tickets", 1)
+        if v.result != "denied": raise AssertionError("verify should be denied while suspended")
+        if v.reason != "mandate_suspended":
+            raise AssertionError(f'reason is "{v.reason}", expected "mandate_suspended" — suspension must be checked before budget')
+        log("reason", v.reason)
+        pass_test("mandate.verify() — denied for suspension even with budget already exhausted (confirms check order)")
+    except Exception as err:
+        fail_test("mandate.suspend()", err)
+
+    # 16.9 mandate.suspend() — idempotent on an already-suspended mandate
+    try:
+        if not mandate_id: raise AssertionError("skipped")
+        p = pq.mandate.suspend(mandate_id)
+        if p.status != "suspended": raise AssertionError(f'status is "{p.status}", expected "suspended"')
+        if p.message != "Already suspended": raise AssertionError(f'missing/unexpected message: "{p.message}"')
+        log("message", p.message)
+        pass_test('mandate.suspend() — idempotent, second call reports "Already suspended"')
+    except Exception as err:
+        fail_test("mandate.suspend() — idempotent", err)
+
+    # 16.10 mandate.resume()
+    try:
+        if not mandate_id: raise AssertionError("skipped")
+        p = pq.mandate.resume(mandate_id)
+        if p.status != "active": raise AssertionError(f'status is "{p.status}", expected "active"')
+        pass_test("mandate.resume() — status set back to active")
+    except Exception as err:
+        fail_test("mandate.resume()", err)
+
+    # 16.11 mandate.revoke() → verify() denied specifically for revocation
+    try:
+        if not mandate_id: raise AssertionError("skipped")
+        p = pq.mandate.revoke(mandate_id)
+        if p.status != "revoked": raise AssertionError(f'status is "{p.status}", expected "revoked"')
+        pass_test("mandate.revoke() — status set to revoked")
+
+        v = pq.mandate.verify(mandate_token, "read_tickets", 1)
+        if v.result != "denied": raise AssertionError("verify should be denied after revoke")
+        if v.reason != "mandate_revoked": raise AssertionError(f'reason is "{v.reason}", expected "mandate_revoked"')
+        log("reason", v.reason)
+        pass_test("mandate.verify() — denied after revoke()")
+    except Exception as err:
+        fail_test("mandate.revoke()", err)
+
+    # 16.12 mandate.narrow() on a revoked mandate — revoke is irreversible, must raise
+    try:
+        if not mandate_id: raise AssertionError("skipped")
+        try:
+            pq.mandate.narrow(mandate_id, ["read_tickets"])
+            raise AssertionError("narrow() should have raised for a revoked mandate, but succeeded")
+        except PQAuthError as err:
+            log("error", err.message)
+            pass_test("mandate.narrow() — correctly rejected on a revoked (irreversible) mandate")
+    except Exception as err:
+        fail_test("mandate.narrow() on revoked", err)
+
+    # 16.13 Regression test — invalid API key must surface a real reason, not None
+    # (this is exactly the gap found and fixed while building mandate.verify(): generic
+    # backend failures like an invalid API key don't carry a "result" field, and must be
+    # normalized into result="denied" with a real reason instead of silently dropping it)
+    try:
+        bad_pq = PQAuth("pqa_" + "0" * 64)
+        v = bad_pq.mandate.verify(mandate_token, "read_tickets", 1)
+        if v.result != "denied": raise AssertionError(f'expected "denied" for an invalid API key, got "{v.result}"')
+        if not v.reason: raise AssertionError("reason is missing/None — the generic-failure normalization regressed")
+        log("reason", v.reason)
+        pass_test("mandate.verify() — invalid API key surfaces a real reason, not None (regression test)")
+    except Exception as err:
+        fail_test("mandate.verify() — invalid API key", err)
 
     # ─── Summary ─────────────────────────────────────────────────────────────
     total = passed + failed

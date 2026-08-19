@@ -47,6 +47,11 @@ from .types import (
     CaGetCertResult, CaGetCertMeta, CaCertStatus,
     CaGetCrlResult, CrlEntry,
     VerifyCertResult,
+    # Mandate
+    Mandate, MandateStatus,
+    MandateEmitResult, MandateEmitMandate, MandateEmitUsage,
+    MandateVerifyResult, MandatePatchResult,
+    MandateGetResult, MandateListResult,
 )
 
 if TYPE_CHECKING:
@@ -89,6 +94,11 @@ __all__ = [
     "CaGetCertResult", "CaGetCertMeta", "CaCertStatus",
     "CaGetCrlResult", "CrlEntry",
     "VerifyCertResult",
+    # Mandate
+    "Mandate", "MandateStatus",
+    "MandateEmitResult", "MandateEmitMandate", "MandateEmitUsage",
+    "MandateVerifyResult", "MandatePatchResult",
+    "MandateGetResult", "MandateListResult",
 ]
 
 
