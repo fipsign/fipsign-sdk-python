@@ -13,6 +13,10 @@ Key pair generation:
   generate_key_pair() — generates an ML-DSA-65 key pair using pyca/cryptography >= 48.0.0.
   publicKey: 1952-byte raw key (base64), compatible with ca.issue() and the JS SDK.
   secretKey: 32-byte seed (base64) — see KeyPairResult docstring for signing usage.
+
+Mandate proof of possession (agent side):
+  generate_agent_key_pair() — key pair of an agent (ML-DSA-44/65/87); the agent keeps secretKey.
+  sign_agent_call()         — signs ONE mandate call; pass it to pq.mandate.verify(agent_signature=...).
 """
 
 from typing import TYPE_CHECKING
@@ -21,11 +25,13 @@ from .client import PQAuth
 from .errors import PQAuthError
 from .middleware import flask_middleware, fastapi_middleware
 from .ca import generate_key_pair
+from .agent import generate_agent_key_pair, sign_agent_call
 from .types import (
     # Token
     PQToken,
     # Key pair
     KeyPairResult,
+    AgentKeyPairResult, AgentAlgorithm,
     # sign()
     SignResult, SignMeta, SignUsage,
     # verify()
@@ -52,6 +58,7 @@ from .types import (
     MandateEmitResult, MandateEmitMandate, MandateEmitUsage,
     MandateVerifyResult, MandatePatchResult,
     MandateGetResult, MandateListResult,
+    MandateDenyReason,
 )
 
 if TYPE_CHECKING:
@@ -69,10 +76,13 @@ __all__ = [
     "flask_middleware",
     "fastapi_middleware",
     "generate_key_pair",
+    "generate_agent_key_pair",
+    "sign_agent_call",
     # Token
     "PQToken",
     # Key pair
     "KeyPairResult",
+    "AgentKeyPairResult", "AgentAlgorithm",
     # sign()
     "SignResult", "SignMeta", "SignUsage",
     # verify()
@@ -99,6 +109,7 @@ __all__ = [
     "MandateEmitResult", "MandateEmitMandate", "MandateEmitUsage",
     "MandateVerifyResult", "MandatePatchResult",
     "MandateGetResult", "MandateListResult",
+    "MandateDenyReason",
 ]
 
 
@@ -119,4 +130,4 @@ try:
     from importlib.metadata import version as _version
     __version__ = _version("fipsign-sdk")
 except Exception:
-    __version__ = "0.9.5"  # fallback si el paquete no está instalado
+    __version__ = "0.12.0"  # fallback si el paquete no está instalado

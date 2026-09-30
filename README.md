@@ -51,6 +51,28 @@ That's signing and verifying. The SDK also covers async usage (`AsyncPQAuth`), F
 
 ---
 
+## Mandate — authorization for AI agents
+
+Give an agent a bounded, revocable credential: which actions it may perform, how much it may spend, and until when. Check every action with one call, and suspend or revoke the mandate at any time.
+
+```python
+result = pq.mandate.emit(
+    agent_id="agent-reporting-v2",
+    issued_by="user@empresa.com",
+    scope=["read:crm", "send_reply"],
+    budget_total=1000,
+    expires_in_seconds=28800,
+)
+
+check = pq.mandate.verify(result.mandate.token, "send_reply", 1)
+if check.result != "granted":
+    raise PermissionError(check.reason)
+```
+
+To make a copied token useless on its own, emit the mandate with the agent's public key (`agent_public_key=`): the agent then signs every call with its private key (`generate_agent_key_pair()` and `sign_agent_call()`). Details in the [Mandate section of the guide](https://fipsign.dev/guide#py13).
+
+---
+
 ## Why ML-DSA-65?
 
 JWT with RS256/ES256 and standard OAuth tokens rely on ECDSA or RSA — both breakable by Shor's algorithm on a sufficiently powerful quantum computer. ML-DSA-65 is based on lattice problems (Module-LWE / Module-SIS) with no known quantum speedup. Standardized by NIST in August 2024 as FIPS 204.

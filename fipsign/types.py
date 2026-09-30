@@ -537,6 +537,49 @@ class KeyPairResult:
 
 MandateStatus = Literal["active", "suspended", "revoked"]
 
+# Every value `reason` takes when mandate.verify() denies a call. `reason` can also
+# hold the plain error text of a failure that never reaches the mandate checks
+# (invalid API key, rate limit, token quota, network error), so the field itself
+# is typed as a plain str.
+MandateDenyReason = Literal[
+    "invalid_signature",         # the token was not issued by this project, or was altered
+    "mandate_expired",
+    "mandate_revoked",
+    "mandate_suspended",
+    "scope_not_authorized",
+    "budget_exhausted",
+    "agent_signature_required",  # the mandate needs an agent_signature and none was sent
+    "agent_signature_invalid",   # bad signature, wrong key, wrong algorithm, or lives too long
+    "agent_signature_mismatch",  # valid signature, but for another mandate, action or cost
+    "agent_signature_replayed",  # this signature already authorized a call
+]
+
+# ML-DSA variants an agent key can use (proof of possession).
+AgentAlgorithm = Literal["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"]
+
+
+@dataclass
+class AgentKeyPairResult:
+    """
+    Result of generate_agent_key_pair() — the key pair of an agent that must
+    prove possession of its mandate. See fipsign/agent.py.
+
+    Attributes
+    ----------
+    publicKey : str
+        Base64 of the raw public key (1312 / 1952 / 2592 bytes for ML-DSA-44 /
+        65 / 87). Pass it to mandate.emit(agent_public_key=...).
+    secretKey : str
+        Base64 of the 32-byte seed. Keep it on the agent; never send it anywhere.
+        Not interchangeable with the JS SDK's (expanded) secret key.
+    algorithm : str
+        The ML-DSA variant of the pair. Store it next to secretKey: a seed does
+        not say which variant it belongs to, and sign_agent_call() needs it.
+    """
+    publicKey: str
+    secretKey: str
+    algorithm: str  # AgentAlgorithm
+
 
 @dataclass
 class Mandate:
@@ -544,6 +587,10 @@ class Mandate:
     Full state of a mandate, as returned by mandate.get() and mandate.list().
     Not the same shape as the ``mandate`` field on mandate.emit()'s result —
     see MandateEmitMandate for that.
+
+    ``requiresAgentSignature`` is True when the mandate was emitted with an
+    agent_public_key: every verify() must then carry an agent_signature. The
+    public key itself is never returned by the API.
     """
     id:               str
     agentId:          str
@@ -558,6 +605,7 @@ class Mandate:
     expiresAt:        int
     expiresInSeconds: int
     updatedAt:        int
+    requiresAgentSignature: bool = False
 
 
 def _parse_mandate(d: Dict[str, Any]) -> "Mandate":
@@ -569,12 +617,18 @@ def _parse_mandate(d: Dict[str, Any]) -> "Mandate":
         budgetRemaining=d["budgetRemaining"], status=d["status"],
         issuedAt=d["issuedAt"], expiresAt=d["expiresAt"],
         expiresInSeconds=d["expiresInSeconds"], updatedAt=d["updatedAt"],
+        requiresAgentSignature=bool(d.get("requiresAgentSignature", False)),
     )
 
 
 @dataclass
 class MandateEmitMandate:
-    """The ``mandate`` field on MandateEmitResult — lighter than Mandate."""
+    """
+    The ``mandate`` field on MandateEmitResult — lighter than Mandate.
+
+    ``requiresAgentSignature`` is True when the mandate was emitted with an
+    agent_public_key (proof of possession).
+    """
     id:          str
     agentId:     str
     issuedBy:    str
@@ -583,6 +637,7 @@ class MandateEmitMandate:
     expiresAt:   int
     status:      str  # MandateStatus
     token:       PQToken
+    requiresAgentSignature: bool = False
 
 
 @dataclass
@@ -612,9 +667,13 @@ class MandateVerifyResult:
     result : str
         "granted" or "denied".
     reason : str | None
-        Set when denied: "scope_not_authorized", "budget_exhausted",
-        "mandate_suspended", "mandate_revoked", "mandate_expired", or
-        the real backend error message (e.g. an invalid API key).
+        Set when denied. One of MandateDenyReason — "invalid_signature",
+        "mandate_expired", "mandate_revoked", "mandate_suspended",
+        "scope_not_authorized", "budget_exhausted", "agent_signature_required",
+        "agent_signature_invalid", "agent_signature_mismatch",
+        "agent_signature_replayed" — or the real error text of a failure that
+        never reaches the mandate checks (an invalid API key, a rate limit, an
+        exhausted token quota, a network error).
     actionMatched, budgetRemaining, expiresInSeconds : set when granted.
     authorizedScope : set when denied for scope_not_authorized.
     budgetConsumedUnits, budgetTotalUnits : set when denied for budget_exhausted.
@@ -647,5 +706,19 @@ class MandateGetResult:
 
 @dataclass
 class MandateListResult:
-    mandates: List[Mandate]
-    total:    int
+    """
+    One page of mandate.list(), most recent first.
+
+    Attributes
+    ----------
+    mandates : list[Mandate]
+        The mandates of this page.
+    count : int
+        How many mandates this page holds (len(mandates)). Not the total of the
+        project: a page can hold fewer than ``limit`` and still have a next one.
+    nextCursor : str | None
+        Pass it to list(cursor=...) to get the next page. None on the last page.
+    """
+    mandates:   List[Mandate]
+    count:      int
+    nextCursor: Optional[str] = None

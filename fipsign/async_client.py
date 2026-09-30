@@ -10,7 +10,7 @@ Use this in FastAPI, aiohttp, or any asyncio-based application.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
 try:
     import httpx
@@ -55,6 +55,16 @@ from .types import (
     ZesVerifyResult,
     _parse_certificate,
     _parse_mandate,
+)
+from .types import Mandate as MandateState
+from .mandate import (
+    _emit_body as _mandate_emit_body,
+    _list_path as _mandate_list_path,
+    _mandate_path,
+    _parse_emit_result as _mandate_parse_emit_result,
+    _parse_list_result as _mandate_parse_list_result,
+    _parse_verify_response as _mandate_parse_verify_response,
+    _verify_body as _mandate_verify_body,
 )
 
 DEFAULT_BASE_URL = "https://api.fipsign.dev"
@@ -577,7 +587,8 @@ class AsyncMandate:
     """
     Async Mandate sub-client. Mirrors MandateClient (sync) 1:1 — see
     mandate.py for full documentation on the lifecycle, budget semantics,
-    and the never-raises contract of verify().
+    proof of possession, and the never-raises contract of verify(). The code
+    that builds requests and parses responses is shared with the sync client.
     """
 
     def __init__(self, client: "AsyncPQAuth") -> None:
@@ -590,53 +601,36 @@ class AsyncMandate:
         scope: List[str],
         budget_total: int,
         expires_in_seconds: int,
+        agent_public_key: Optional[str] = None,
     ) -> MandateEmitResult:
         """Issue a new mandate. Cost: 2 tokens. See MandateClient.emit() for full docs."""
-        body: Dict[str, Any] = {
-            "agentId": agent_id,
-            "issuedBy": issued_by,
-            "scope": scope,
-            "budgetTotal": budget_total,
-            "expiresInSeconds": expires_in_seconds,
-        }
-        data = await self._client._request("POST", "/mandate", json=body)
-        m = data["mandate"]
-        u = data["usage"]
-        t = m["token"]
-        return MandateEmitResult(
-            mandate=MandateEmitMandate(
-                id=m["id"],
-                agentId=m["agentId"],
-                issuedBy=m["issuedBy"],
-                scope=m["scope"],
-                budgetTotal=m["budgetTotal"],
-                expiresAt=m["expiresAt"],
-                status=m["status"],
-                token=PQToken(
-                    payload=t["payload"],
-                    signature=t["signature"],
-                    algorithm=t["algorithm"],
-                    issuedAt=t["issuedAt"],
-                ),
-            ),
-            usage=MandateEmitUsage(
-                freeRemaining=u["freeRemaining"],
-                packRemaining=u["packRemaining"],
-                totalRemaining=u["totalRemaining"],
-                month=u["month"],
-            ),
+        body = _mandate_emit_body(
+            agent_id, issued_by, scope, budget_total, expires_in_seconds, agent_public_key
         )
+        data = await self._client._request("POST", "/mandate", json=body)
+        return _mandate_parse_emit_result(data)
 
-    async def verify(self, token: PQToken, action: str, cost: int) -> MandateVerifyResult:
+    async def verify(
+        self,
+        token: PQToken,
+        action: str,
+        cost: int,
+        *,
+        agent_signature: Optional[PQToken] = None,
+    ) -> MandateVerifyResult:
         """
         Check authorization. Never raises. See MandateClient.verify() for
         the full explanation, including why this bypasses self._client._request().
         """
+        body, problem = _mandate_verify_body(token, action, cost, agent_signature)
+        if body is None:
+            return MandateVerifyResult(result="denied", reason=problem)
+
         try:
             resp = await self._client._http.request(
                 "POST",
                 f"{self._client._base_url}/mandate/verify",
-                json={"token": token.to_dict(), "action": action, "cost": cost},
+                json=body,
             )
         except Exception as exc:
             return MandateVerifyResult(result="denied", reason=f"Network error: {exc}")
@@ -649,29 +643,12 @@ class AsyncMandate:
                 reason=f"Request failed with status {resp.status_code}",
             )
 
-        if data.get("result") in ("granted", "denied"):
-            u = data.get("usage")
-            return MandateVerifyResult(
-                result=data["result"],
-                reason=data.get("reason"),
-                actionMatched=data.get("actionMatched"),
-                budgetRemaining=data.get("budgetRemaining"),
-                expiresInSeconds=data.get("expiresInSeconds"),
-                authorizedScope=data.get("authorizedScope"),
-                budgetConsumedUnits=data.get("budgetConsumedUnits"),
-                budgetTotalUnits=data.get("budgetTotalUnits"),
-                usage=MandateEmitUsage(**u) if u else None,
-            )
-
-        return MandateVerifyResult(
-            result="denied",
-            reason=data.get("error") or f"Request failed with status {resp.status_code}",
-        )
+        return _mandate_parse_verify_response(resp.status_code, data)
 
     async def narrow(self, mandate_id: str, scope: List[str]) -> MandatePatchResult:
         """Shrink scope. Free, monotonic. See MandateClient.narrow() for full docs."""
         data = await self._client._request(
-            "PATCH", f"/mandate/{mandate_id}", json={"action": "narrow", "scope": scope}
+            "PATCH", _mandate_path(mandate_id), json={"action": "narrow", "scope": scope}
         )
         return MandatePatchResult(
             id=data["id"],
@@ -683,7 +660,7 @@ class AsyncMandate:
     async def suspend(self, mandate_id: str) -> MandatePatchResult:
         """Pause a mandate. Free, idempotent. See MandateClient.suspend() for full docs."""
         data = await self._client._request(
-            "PATCH", f"/mandate/{mandate_id}", json={"action": "suspend"}
+            "PATCH", _mandate_path(mandate_id), json={"action": "suspend"}
         )
         return MandatePatchResult(
             id=data["id"], status=data["status"], message=data.get("message")
@@ -692,29 +669,57 @@ class AsyncMandate:
     async def resume(self, mandate_id: str) -> MandatePatchResult:
         """Reactivate a suspended mandate. Free. See MandateClient.resume() for full docs."""
         data = await self._client._request(
-            "PATCH", f"/mandate/{mandate_id}", json={"action": "resume"}
+            "PATCH", _mandate_path(mandate_id), json={"action": "resume"}
         )
         return MandatePatchResult(id=data["id"], status=data["status"])
 
     async def revoke(self, mandate_id: str) -> MandatePatchResult:
         """Permanently terminate a mandate. Free, irreversible. See MandateClient.revoke()."""
         data = await self._client._request(
-            "PATCH", f"/mandate/{mandate_id}", json={"action": "revoke"}
+            "PATCH", _mandate_path(mandate_id), json={"action": "revoke"}
         )
         return MandatePatchResult(id=data["id"], status=data["status"])
 
     async def get(self, mandate_id: str) -> MandateGetResult:
         """Get a mandate's current state by id. Free. See MandateClient.get() for full docs."""
-        data = await self._client._request("GET", f"/mandate/{mandate_id}")
+        data = await self._client._request("GET", _mandate_path(mandate_id))
         return MandateGetResult(mandate=_parse_mandate(data["mandate"]))
 
-    async def list(self) -> MandateListResult:
-        """List every mandate for this project. Free. See MandateClient.list() for full docs."""
-        data = await self._client._request("GET", "/mandate")
-        return MandateListResult(
-            mandates=[_parse_mandate(m) for m in data["mandates"]],
-            total=data["total"],
-        )
+    async def list(
+        self,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> MandateListResult:
+        """
+        One page of this project's mandates, most recent first. Free.
+        See MandateClient.list() for full docs.
+        """
+        data = await self._client._request("GET", _mandate_list_path(limit, cursor))
+        return _mandate_parse_list_result(data)
+
+    async def list_all(self, limit: Optional[int] = None) -> AsyncIterator[MandateState]:
+        """
+        Every mandate of this project, following the pages for you. Free.
+        Use ``async for``. See MandateClient.list_all() for full docs.
+
+        Examples
+        --------
+        >>> async for m in pq.mandate.list_all():
+        ...     print(m.id, m.status)
+        """
+        cursor: Optional[str] = None
+        while True:
+            page = await self.list(limit=limit, cursor=cursor)
+            for m in page.mandates:
+                yield m
+            if page.nextCursor is None:
+                return
+            if page.nextCursor == cursor:
+                raise PQAuthError(
+                    "The API returned the same cursor twice; stopping to avoid an endless loop",
+                    "API_ERROR",
+                )
+            cursor = page.nextCursor
 
 
 # ─── AsyncPQAuth ──────────────────────────────────────────────────────────────

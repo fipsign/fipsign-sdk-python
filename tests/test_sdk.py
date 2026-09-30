@@ -10,9 +10,10 @@ Optional:
     FIPSIGN_ROOT_CERT_JSON="$(cat root-cert.json)"  — enables offline verify_cert() tests (PQCert CA)
     FIPSIGN_ROOT_CERT_PEM="$(cat root-ca.pem)"      — enables offline verify_x509_cert() tests (X.509 CA)
 
-Token cost: ~29 tokens per run. Runtime: ~3-4 minutes.
+Token cost: ~41 tokens per run. Runtime: ~3-4 minutes.
     Includes 2 expiry tests that sign with expires_in_seconds=60 and wait 62 seconds each.
-    Mandate section (16): 1 emit + 3 granted verify() calls = 4 tokens (PATCH/GET/LIST are free).
+    Mandate section (16): 1 emit + 3 granted verify() calls = 8 tokens (emit and a granted verify() cost 2 each).
+    Mandate section (17): 3 emits + 1 granted verify() call = 8 tokens (a denied verify(), PATCH, GET and LIST are free).
 
 Prerequisites:
     1. Create a free account at https://app.fipsign.dev
@@ -29,7 +30,7 @@ from datetime import datetime
 
 
 try:
-    from fipsign import PQAuth, PQAuthError, generate_key_pair
+    from fipsign import PQAuth, PQAuthError, generate_key_pair, generate_agent_key_pair, sign_agent_call
     from fipsign.types import PQToken, PQCert, KeyPairResult
 except ImportError:
     print("\033[31mError: fipsign package not found. Install it with: pip install fipsign-sdk\033[0m")
@@ -1101,9 +1102,10 @@ def run() -> None:
         if not mandate_id: raise AssertionError("skipped")
         l = pq.mandate.list()
         found = next((m for m in l.mandates if m.id == mandate_id), None)
-        if not found: raise AssertionError(f"mandate {mandate_id} not found in list() (total: {l.total})")
-        log("total", str(l.total))
-        pass_test("mandate.list() — created mandate appears in the project list")
+        if not found: raise AssertionError(f"mandate {mandate_id} not found in the first page of list() (count: {l.count})")
+        if l.count != len(l.mandates): raise AssertionError(f"count is {l.count}, but the page holds {len(l.mandates)} mandates")
+        log("count", str(l.count))
+        pass_test("mandate.list() — created mandate appears in the first page")
     except Exception as err:
         fail_test("mandate.list()", err)
 
@@ -1218,6 +1220,202 @@ def run() -> None:
         pass_test("mandate.verify() — invalid API key surfaces a real reason, not None (regression test)")
     except Exception as err:
         fail_test("mandate.verify() — invalid API key", err)
+
+    # ─── 17 Mandate — proof of possession and pagination ─────────────────────
+    section("17 · Mandate — proof of possession and pagination")
+
+    pop_id = None
+    pop_token = None
+    agent_kp = None
+
+    # 17.1 mandate.emit() with agent_public_key — the mandate requires the agent's signature
+    try:
+        agent_kp = generate_agent_key_pair()
+        if agent_kp.algorithm != "ML-DSA-65": raise AssertionError(f'default algorithm is "{agent_kp.algorithm}", expected "ML-DSA-65"')
+        r = pq.mandate.emit(
+            agent_id=f"agent_pop_{int(time.time())}",
+            issued_by="sdk_integration_test",
+            scope=["read_tickets"],
+            budget_total=5,
+            expires_in_seconds=3600,
+            agent_public_key=agent_kp.publicKey,
+        )
+        if r.mandate.requiresAgentSignature is not True:
+            raise AssertionError("emit() result should report requiresAgentSignature=True")
+        g = pq.mandate.get(r.mandate.id)
+        if g.mandate.requiresAgentSignature is not True:
+            raise AssertionError("get() should report requiresAgentSignature=True")
+        pop_id = r.mandate.id
+        pop_token = r.mandate.token
+        log("id", pop_id)
+        log("requiresAgentSignature", str(g.mandate.requiresAgentSignature))
+        pass_test("mandate.emit(agent_public_key=...) — mandate requires the agent's signature")
+    except Exception as err:
+        fail_test("mandate.emit() with agent_public_key", err)
+
+    # 17.2 verify() without agent_signature — denied, free
+    try:
+        if not pop_id: raise AssertionError("skipped")
+        v = pq.mandate.verify(pop_token, "read_tickets", 1)
+        if v.result != "denied": raise AssertionError(f'result is "{v.result}", expected "denied"')
+        if v.reason != "agent_signature_required": raise AssertionError(f'reason is "{v.reason}", expected "agent_signature_required"')
+        pass_test("mandate.verify() — denied with agent_signature_required when the agent does not sign")
+    except Exception as err:
+        fail_test("mandate.verify() — no agent_signature", err)
+
+    # 17.3 sign_agent_call() + verify() — granted
+    try:
+        if not pop_id: raise AssertionError("skipped")
+        sig = sign_agent_call(pop_token, "read_tickets", 1, agent_kp.secretKey, algorithm=agent_kp.algorithm)
+        v = pq.mandate.verify(pop_token, "read_tickets", 1, agent_signature=sig)
+        if v.result != "granted": raise AssertionError(f'result is "{v.result}", expected "granted" (reason: {v.reason})')
+        if v.budgetRemaining != 4: raise AssertionError(f"budgetRemaining is {v.budgetRemaining}, expected 4")
+        log("result", v.result)
+        pass_test("sign_agent_call() + mandate.verify(agent_signature=...) — granted")
+
+        # 17.4 the same signature cannot be used twice
+        again = pq.mandate.verify(pop_token, "read_tickets", 1, agent_signature=sig)
+        if again.result != "denied" or again.reason != "agent_signature_replayed":
+            raise AssertionError(f"reusing a signature should be denied with agent_signature_replayed, got {again.result}/{again.reason}")
+        pass_test("mandate.verify() — a signature that already authorized a call is denied (agent_signature_replayed)")
+    except Exception as err:
+        fail_test("sign_agent_call() + verify()", err)
+
+    # 17.5 a signature is bound to one mandate, action and cost
+    try:
+        if not pop_id: raise AssertionError("skipped")
+        sig = sign_agent_call(pop_token, "read_tickets", 1, agent_kp.secretKey, algorithm=agent_kp.algorithm)
+        v = pq.mandate.verify(pop_token, "read_tickets", 2, agent_signature=sig)
+        if v.result != "denied" or v.reason != "agent_signature_mismatch":
+            raise AssertionError(f"a signature made for cost=1 must not authorize cost=2, got {v.result}/{v.reason}")
+        pass_test("mandate.verify() — signature made for another cost is denied (agent_signature_mismatch)")
+    except Exception as err:
+        fail_test("mandate.verify() — signature bound to the call", err)
+
+    # 17.6 a signature made with another key is rejected
+    try:
+        if not pop_id: raise AssertionError("skipped")
+        other = generate_agent_key_pair()
+        sig = sign_agent_call(pop_token, "read_tickets", 1, other.secretKey, algorithm=other.algorithm)
+        v = pq.mandate.verify(pop_token, "read_tickets", 1, agent_signature=sig)
+        if v.result != "denied" or v.reason != "agent_signature_invalid":
+            raise AssertionError(f"a signature from another key must be denied with agent_signature_invalid, got {v.result}/{v.reason}")
+        pass_test("mandate.verify() — signature made with another key is denied (agent_signature_invalid)")
+    except Exception as err:
+        fail_test("mandate.verify() — wrong agent key", err)
+
+    # 17.7 local argument checks (no network)
+    try:
+        if not pop_id: raise AssertionError("skipped")
+        try:
+            sign_agent_call(pop_token, "read_tickets", 1, agent_kp.secretKey)  # algorithm is required
+            raise AssertionError("sign_agent_call() without algorithm should raise TypeError")
+        except TypeError:
+            pass
+        try:
+            sign_agent_call(pop_token, "read_tickets", 1, "AAAA", algorithm="ML-DSA-65")
+            raise AssertionError("a 3-byte secret_key should be rejected")
+        except PQAuthError as err:
+            if err.code != "INVALID_SECRET_KEY": raise AssertionError(f"code is {err.code}, expected INVALID_SECRET_KEY")
+        try:
+            sign_agent_call(pop_token, "read_tickets", 1, agent_kp.secretKey, algorithm="ML-DSA-65", expires_in_seconds=61)
+            raise AssertionError("a 61-second lifetime should be rejected")
+        except PQAuthError as err:
+            if err.code != "INVALID_ARGUMENT": raise AssertionError(f"code is {err.code}, expected INVALID_ARGUMENT")
+        try:
+            sign_agent_call(pop_token, "read_tickets", 1, agent_kp.secretKey, algorithm="ML-DSA-99")
+            raise AssertionError("an unknown algorithm should be rejected")
+        except PQAuthError as err:
+            if err.code != "UNSUPPORTED_ALGORITHM": raise AssertionError(f"code is {err.code}, expected UNSUPPORTED_ALGORITHM")
+        pass_test("sign_agent_call() — missing algorithm, bad key, long lifetime and unknown algorithm are rejected locally")
+    except Exception as err:
+        fail_test("sign_agent_call() — argument checks", err)
+
+    # 17.7b the signed action is trimmed like the backend trims it (JavaScript trim():
+    # U+FEFF and U+00A0 are removed, \x1c is not), or a granted call would come back as a mismatch
+    try:
+        if not pop_id: raise AssertionError("skipped")
+        import base64 as _b64, json as _json
+        def _signed_action(raw: str) -> str:
+            sig = sign_agent_call(pop_id, raw, 1, agent_kp.secretKey, algorithm=agent_kp.algorithm)
+            return _json.loads(_b64.b64decode(sig.payload))["action"]
+        if _signed_action("\ufeff\u00a0 read_tickets \u3000") != "read_tickets":
+            raise AssertionError("JavaScript whitespace around the action was not trimmed")
+        if _signed_action("\x1cread_tickets\x1c") != "\x1cread_tickets\x1c":
+            raise AssertionError("\\x1c is not whitespace for the backend and must be kept")
+        pass_test("sign_agent_call() — the action is trimmed exactly like the backend trims it")
+    except Exception as err:
+        fail_test("sign_agent_call() — action trimming", err)
+
+    # 17.8 ML-DSA-44 and ML-DSA-87 agent keys. A signature made for another cost is denied with
+    # agent_signature_mismatch only AFTER its cryptographic signature verified, so the result
+    # proves the variant works without spending budget.
+    for variant in ("ML-DSA-44", "ML-DSA-87"):
+        try:
+            kp = generate_agent_key_pair(variant)
+            r = pq.mandate.emit(
+                agent_id=f"agent_{variant[-2:]}_{int(time.time())}",
+                issued_by="sdk_integration_test",
+                scope=["read_tickets"],
+                budget_total=5,
+                expires_in_seconds=3600,
+                agent_public_key=kp.publicKey,
+            )
+            sig = sign_agent_call(r.mandate.token, "read_tickets", 1, kp.secretKey, algorithm=kp.algorithm)
+            v = pq.mandate.verify(r.mandate.token, "read_tickets", 2, agent_signature=sig)
+            if v.result != "denied" or v.reason != "agent_signature_mismatch":
+                raise AssertionError(f"expected denied/agent_signature_mismatch (the signature itself must verify), got {v.result}/{v.reason}")
+            pass_test(f"{variant} agent key — the backend verifies the signature made in Python")
+        except Exception as err:
+            fail_test(f"{variant} agent key", err)
+
+    # 17.9 pagination
+    try:
+        if not pop_id: raise AssertionError("skipped")
+        page1 = pq.mandate.list(limit=1)
+        if page1.count != 1 or len(page1.mandates) != 1: raise AssertionError(f"limit=1 should return exactly 1 mandate, got {page1.count}")
+        if not page1.nextCursor: raise AssertionError("nextCursor is missing although the project has more mandates")
+        page2 = pq.mandate.list(limit=1, cursor=page1.nextCursor)
+        if not page2.mandates: raise AssertionError("the second page is empty")
+        if page2.mandates[0].id == page1.mandates[0].id: raise AssertionError("the second page repeats the first mandate")
+        log("page 1", page1.mandates[0].id)
+        log("page 2", page2.mandates[0].id)
+        pass_test("mandate.list(limit, cursor) — pages follow each other without repeating")
+
+        found = next((m for m in pq.mandate.list_all(limit=100) if m.id == pop_id), None)
+        if not found: raise AssertionError(f"mandate {pop_id} not found by list_all()")
+        if found.requiresAgentSignature is not True: raise AssertionError("list_all() should report requiresAgentSignature=True")
+        pass_test("mandate.list_all() — walks the pages and reports requiresAgentSignature")
+    except Exception as err:
+        fail_test("mandate.list() pagination", err)
+
+    # 17.10 a mandate id is escaped: it can only ever name a mandate, never another endpoint
+    try:
+        try:
+            pq.mandate.get("../usage")
+            raise AssertionError('get("../usage") returned a result — it reached another endpoint')
+        except PQAuthError as err:
+            log("error", err.message)
+            if err.status != 404: raise AssertionError(f"expected the API to answer 404, got status {err.status}")
+        for bad in ("..", ".", "", "  "):
+            try:
+                pq.mandate.get(bad)
+                raise AssertionError(f"get({bad!r}) should be refused")
+            except PQAuthError as err:
+                if err.code != "INVALID_ARGUMENT": raise AssertionError(f"get({bad!r}): code is {err.code}, expected INVALID_ARGUMENT")
+        pass_test("mandate.get() — path characters are escaped, and ids like '..' or '' are refused before any request")
+    except Exception as err:
+        fail_test("mandate.get() — id escaping", err)
+
+    # 17.11 verify() never raises, even for arguments that are not tokens
+    try:
+        v = pq.mandate.verify("not a token", "read_tickets", 1)
+        if v.result != "denied" or not v.reason: raise AssertionError(f"expected denied with a reason, got {v}")
+        v = pq.mandate.verify(pop_token or mandate_token, "read_tickets", 1, agent_signature="not a signature")
+        if v.result != "denied" or not v.reason: raise AssertionError(f"expected denied with a reason, got {v}")
+        pass_test("mandate.verify() — never raises, even when token or agent_signature is not a PQToken")
+    except Exception as err:
+        fail_test("mandate.verify() — never raises", err)
 
     # ─── Summary ─────────────────────────────────────────────────────────────
     total = passed + failed
