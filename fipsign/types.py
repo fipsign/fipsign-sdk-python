@@ -70,6 +70,19 @@ class SignResult:
 
 # ─── verify() ─────────────────────────────────────────────────────────────────
 
+# Why verify() answered valid=False.
+#   "rejected"         FIPSign looked at the token and it is not acceptable: bad signature, expired, revoked,
+#                      malformed, issued for another project, or a Mandate token. Answer 401.
+#   "rate_limited"     Your API key sent too many requests in the current minute. The token was NOT checked:
+#                      wait ``retry_after`` seconds and try again.
+#   "quota_exhausted"  Your free tokens and your packs are used up. The token was NOT checked and waiting
+#                      does not help: buy a pack from the dashboard.
+#   "unavailable"      FIPSign could not answer: timeout, network failure, a server error, or an invalid
+#                      API key. The token was NOT checked.
+# Only "rejected" says something about the token. Do not log a user out because of the other three.
+VerifyFailure = Literal["rejected", "rate_limited", "quota_exhausted", "unavailable"]
+
+
 @dataclass
 class VerifyResult:
     """
@@ -83,11 +96,20 @@ class VerifyResult:
         Decoded token payload. Contains ``sub``, ``iat``, ``exp``, and any
         custom fields passed to sign(). None when valid=False.
     error : str | None
-        Human-readable error message when valid=False.
+        Human-readable error message when valid=False. For your logs: decide on
+        ``failure``, not on this text.
+    failure : VerifyFailure | None
+        Why ``valid`` is False: ``"rejected"`` (the token is not acceptable) or one of
+        ``"rate_limited"``, ``"quota_exhausted"``, ``"unavailable"`` (the check could not
+        be done). None when ``valid`` is True.
+    retry_after : int | None
+        Seconds to wait before trying again. Only set with ``failure="rate_limited"``.
     """
-    valid:   bool
-    payload: Optional[Dict[str, Any]] = None
-    error:   Optional[str]            = None
+    valid:       bool
+    payload:     Optional[Dict[str, Any]] = None
+    error:       Optional[str]            = None
+    failure:     Optional[VerifyFailure]  = None
+    retry_after: Optional[int]            = None
 
 
 # ─── zes ──────────────────────────────────────────────────────────────────────
@@ -120,12 +142,14 @@ class ZesVerifyResult:
         stored in the token. False if the data was altered — even when
         valid is True (the token itself can be legitimate while the data
         given to verify() does not match what was originally signed).
-    payload, error : same as VerifyResult.
+    payload, error, failure, retry_after : same as VerifyResult.
     """
     valid:       bool
     dataMatches: bool
     payload:     Optional[Dict[str, Any]] = None
     error:       Optional[str]            = None
+    failure:     Optional[VerifyFailure]  = None
+    retry_after: Optional[int]            = None
 
 
 # ─── revoke() ─────────────────────────────────────────────────────────────────

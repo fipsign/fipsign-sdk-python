@@ -20,7 +20,9 @@ except ImportError:
     )
 
 from .errors import PQAuthError
-from .utils import canonicalize_for_signing, zes_hash
+from .utils import (
+    api_error, canonicalize_for_signing, parse_retry_after, verify_failure_result, zes_hash,
+)
 from .types import (
     CaGetCertMeta,
     CaGetCertResult,
@@ -578,6 +580,8 @@ class AsyncZes:
             dataMatches=data_matches,
             payload=result.payload,
             error=result.error,
+            failure=result.failure,
+            retry_after=result.retry_after,
         )
 
 
@@ -663,7 +667,11 @@ class AsyncMandate:
             "PATCH", _mandate_path(mandate_id), json={"action": "suspend"}
         )
         return MandatePatchResult(
-            id=data["id"], status=data["status"], message=data.get("message")
+            id=data["id"],
+            status=data["status"],
+            scope=data.get("scope"),
+            updatedAt=data.get("updatedAt"),
+            message=data.get("message"),
         )
 
     async def resume(self, mandate_id: str) -> MandatePatchResult:
@@ -671,14 +679,24 @@ class AsyncMandate:
         data = await self._client._request(
             "PATCH", _mandate_path(mandate_id), json={"action": "resume"}
         )
-        return MandatePatchResult(id=data["id"], status=data["status"])
+        return MandatePatchResult(
+            id=data["id"],
+            status=data["status"],
+            scope=data.get("scope"),
+            updatedAt=data.get("updatedAt"),
+        )
 
     async def revoke(self, mandate_id: str) -> MandatePatchResult:
         """Permanently terminate a mandate. Free, irreversible. See MandateClient.revoke()."""
         data = await self._client._request(
             "PATCH", _mandate_path(mandate_id), json={"action": "revoke"}
         )
-        return MandatePatchResult(id=data["id"], status=data["status"])
+        return MandatePatchResult(
+            id=data["id"],
+            status=data["status"],
+            scope=data.get("scope"),
+            updatedAt=data.get("updatedAt"),
+        )
 
     async def get(self, mandate_id: str) -> MandateGetResult:
         """Get a mandate's current state by id. Free. See MandateClient.get() for full docs."""
@@ -777,16 +795,18 @@ class AsyncPQAuth:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def _request(
+    async def _send(
         self,
         method: str,
         path:   str,
         *,
         json: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    ) -> "httpx.Response":
+        """One call to the API. Returns the response whatever its status; raises PQAuthError
+        only when no response arrived (TIMEOUT or NETWORK_ERROR)."""
         url = f"{self._base_url}{path}"
         try:
-            resp = await self._http.request(method, url, json=json)
+            return await self._http.request(method, url, json=json)
         except httpx.TimeoutException:
             raise PQAuthError("Request timed out", "TIMEOUT")
         except httpx.NetworkError as exc:
@@ -794,6 +814,15 @@ class AsyncPQAuth:
         except Exception as exc:
             # Catch other httpx exceptions (ProtocolError, etc.) and wrap them
             raise PQAuthError(f"Network error: {exc}", "NETWORK_ERROR")
+
+    async def _request(
+        self,
+        method: str,
+        path:   str,
+        *,
+        json: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        resp = await self._send(method, path, json=json)
 
         try:
             data = resp.json()
@@ -805,11 +834,7 @@ class AsyncPQAuth:
             )
 
         if not resp.is_success or not data.get("success", False):
-            raise PQAuthError(
-                data.get("error") or f"Request failed with status {resp.status_code}",
-                "API_ERROR",
-                resp.status_code,
-            )
+            raise api_error(resp.status_code, data, parse_retry_after(resp.headers.get("Retry-After")))
 
         return data
 
@@ -872,6 +897,10 @@ class AsyncPQAuth:
         """
         Verify a FIPSign token. Never raises — returns valid=False on failure.
 
+        ``failure`` tells a token that was refused (``"rejected"``) from a check that
+        could not be done (``"rate_limited"``, ``"quota_exhausted"``, ``"unavailable"``).
+        Decide on ``failure``, not on the text of ``error``. See PQAuth.verify().
+
         Examples
         --------
         >>> result = await pq.verify(token)
@@ -879,12 +908,26 @@ class AsyncPQAuth:
         ...     raise PermissionError(result.error)
         """
         try:
-            data = await self._request("POST", "/verify", json={"token": token.to_dict()})
-            return VerifyResult(valid=True, payload=data.get("payload"))
-        except PQAuthError as exc:
-            return VerifyResult(valid=False, error=exc.message)
+            body = {"token": token.to_dict()}
         except Exception as exc:
-            return VerifyResult(valid=False, error=str(exc))
+            # Not a token object at all: nothing to send, so nothing for FIPSign to refuse or fail on.
+            return VerifyResult(valid=False, error=str(exc), failure="rejected")
+        try:
+            resp = await self._send("POST", "/verify", json=body)
+            try:
+                data = resp.json()
+            except ValueError:
+                data = None
+            if resp.is_success and isinstance(data, dict) and data.get("success", False):
+                return VerifyResult(valid=True, payload=data.get("payload"))
+            return verify_failure_result(
+                resp.status_code, data, parse_retry_after(resp.headers.get("Retry-After"))
+            )
+        except PQAuthError as exc:
+            # No response arrived (timeout, network): the token was not checked.
+            return VerifyResult(valid=False, error=exc.message, failure="unavailable")
+        except Exception as exc:
+            return VerifyResult(valid=False, error=str(exc), failure="unavailable")
 
     async def revoke(self, token: PQToken, reason: Optional[str] = None) -> RevokeResult:
         """

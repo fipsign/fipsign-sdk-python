@@ -35,7 +35,7 @@ from .types import (
     # sign()
     SignResult, SignMeta, SignUsage,
     # verify()
-    VerifyResult,
+    VerifyResult, VerifyFailure,
     # zes
     ZesSignResult, ZesVerifyResult,
     # revoke()
@@ -86,7 +86,7 @@ __all__ = [
     # sign()
     "SignResult", "SignMeta", "SignUsage",
     # verify()
-    "VerifyResult",
+    "VerifyResult", "VerifyFailure",
     # zes
     "ZesSignResult", "ZesVerifyResult",
     # revoke()
@@ -130,4 +130,4 @@ try:
     from importlib.metadata import version as _version
     __version__ = _version("fipsign-sdk")
 except Exception:
-    __version__ = "0.12.0"  # fallback si el paquete no está instalado
+    __version__ = "0.13.0"  # fallback si el paquete no está instalado

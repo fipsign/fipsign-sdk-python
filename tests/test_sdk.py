@@ -14,6 +14,7 @@ Token cost: ~41 tokens per run. Runtime: ~3-4 minutes.
     Includes 2 expiry tests that sign with expires_in_seconds=60 and wait 62 seconds each.
     Mandate section (16): 1 emit + 3 granted verify() calls = 8 tokens (emit and a granted verify() cost 2 each).
     Mandate section (17): 3 emits + 1 granted verify() call = 8 tokens (a denied verify(), PATCH, GET and LIST are free).
+    Section 18: 1 sign() + 1 verify() + 1 emit = 4 tokens; the rest runs against a stub server on localhost.
 
 Prerequisites:
     1. Create a free account at https://app.fipsign.dev
@@ -1416,6 +1417,148 @@ def run() -> None:
         pass_test("mandate.verify() — never raises, even when token or agent_signature is not a PQToken")
     except Exception as err:
         fail_test("mandate.verify() — never raises", err)
+
+    # ─── 18 A failed check is not a rejected token ───────────────────────────
+    section("18 · verify() / PQAuthError — a failed check is not a rejected token")
+
+    try:
+        token = pq.sign("failure_test", expires_in_seconds=3600).token
+        bad = token.to_dict()
+        bad["payload"] = "TAMPERED_PAYLOAD"
+        r = pq.verify(PQToken.from_dict(bad))
+        if r.valid:
+            raise Exception("a tampered token was accepted")
+        if r.failure != "rejected":
+            raise Exception(f"failure is {r.failure!r}, expected 'rejected'")
+        if r.retry_after is not None:
+            raise Exception("retry_after is set on a rejection")
+        log("error", r.error)
+        pass_test('verify() — a tampered token is failure="rejected"')
+    except Exception as err:
+        fail_test('verify() — a tampered token is failure="rejected"', err)
+
+    # A stub FIPSign on localhost answers with exactly the replies we need (no tokens spent, no waiting).
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    reply = {"status": 200, "headers": {}, "body": {"success": True, "valid": True, "payload": {"sub": "u"}}}
+
+    class Stub(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
+            data = json.dumps(reply["body"]).encode()
+            self.send_response(reply["status"])
+            self.send_header("Content-Type", "application/json")
+            for k, v in reply["headers"].items():
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    stub = ThreadingHTTPServer(("127.0.0.1", 0), Stub)
+    threading.Thread(target=stub.serve_forever, daemon=True).start()
+    pq_stub = PQAuth("pqa_" + "a" * 64, base_url=f"http://127.0.0.1:{stub.server_address[1]}", timeout=2)
+    some_token = PQToken(payload="eyJ4IjoxfQ==", signature="AAAA", algorithm="ML-DSA-65", issuedAt=1)
+    RATE = {"success": False, "error": "Rate limit exceeded. Maximum 300 requests per minute per API key.", "code": "rate_limited"}
+    QUOTA = {"success": False, "error": "Token limit reached.", "code": "token_quota_exhausted"}
+
+    try:
+        cases = [
+            ("401 valid:false (revoked)",        401, {},                    {"success": False, "valid": False, "error": "Token has been revoked"}, "rejected", None),
+            ("400 malformed token",              400, {},                    {"success": False, "error": "Invalid token format"},                  "rejected", None),
+            ("429 rate_limited + Retry-After 7", 429, {"Retry-After": "7"},  RATE,                                                                  "rate_limited", 7),
+            ("429 token_quota_exhausted",        429, {},                    QUOTA,                                                                 "quota_exhausted", None),
+            ("401 invalid API key (no valid)",   401, {},                    {"success": False, "error": "API key required or invalid."},           "unavailable", None),
+            ("500 server error",                 500, {},                    {"success": False, "error": "Internal server error"},                  "unavailable", None),
+        ]
+        for label, status, headers, body, failure, retry_after in cases:
+            reply.update(status=status, headers=headers, body=body)
+            r = pq_stub.verify(some_token)
+            if r.valid is not False or r.failure != failure or r.retry_after != retry_after:
+                raise Exception(f"{label} → valid={r.valid} failure={r.failure} retry_after={r.retry_after}, expected {failure} / {retry_after}")
+            log(label, failure + ("" if retry_after is None else f" (retry_after {retry_after})"))
+        pass_test("verify() — rejected / rate_limited / quota_exhausted / unavailable are told apart")
+    except Exception as err:
+        fail_test("verify() — failure kinds", err)
+
+    try:
+        reply.update(status=429, headers={"Retry-After": "7"}, body=RATE)
+        try:
+            pq_stub.sign("x")
+            raise Exception("sign() did not raise")
+        except PQAuthError as e1:
+            if (e1.code, e1.status, e1.server_code, e1.retry_after) != ("API_ERROR", 429, "rate_limited", 7):
+                raise Exception(f"rate limit error is {(e1.code, e1.status, e1.server_code, e1.retry_after)}")
+        reply.update(status=429, headers={}, body=QUOTA)
+        try:
+            pq_stub.sign("x")
+            raise Exception("sign() did not raise")
+        except PQAuthError as e2:
+            if (e2.server_code, e2.retry_after) != ("token_quota_exhausted", None):
+                raise Exception(f"quota error is {(e2.server_code, e2.retry_after)}")
+        pass_test("PQAuthError — server_code and retry_after tell a rate limit from an exhausted quota")
+    except Exception as err:
+        fail_test("PQAuthError — server_code and retry_after", err)
+
+    try:
+        reply.update(status=429, headers={"Retry-After": "7"}, body=RATE)
+        z = pq_stub.zes.verify(some_token, {"a": 1})
+        if (z.valid, z.dataMatches, z.failure, z.retry_after) != (False, False, "rate_limited", 7):
+            raise Exception(f"zes.verify() answered {(z.valid, z.dataMatches, z.failure, z.retry_after)}")
+        pass_test("zes.verify() — carries failure and retry_after")
+    except Exception as err:
+        fail_test("zes.verify() — failure and retry_after", err)
+
+    try:
+        from flask import Flask, jsonify
+        from fipsign import flask_middleware
+
+        app = Flask(__name__)
+
+        @app.route("/api/profile")
+        @flask_middleware(pq_stub)
+        def profile():
+            return jsonify(ok=True)
+
+        import base64
+        import dataclasses
+
+        headers = {"Authorization": "Bearer " + base64.b64encode(json.dumps(dataclasses.asdict(some_token)).encode()).decode()}
+        client = app.test_client()
+        reply.update(status=401, headers={}, body={"success": False, "valid": False, "error": "Token has been revoked"})
+        rejected = client.get("/api/profile", headers=headers)
+        if rejected.status_code != 401:
+            raise Exception(f"a refused token gave {rejected.status_code}, expected 401")
+        reply.update(status=429, headers={"Retry-After": "7"}, body=RATE)
+        limited = client.get("/api/profile", headers=headers)
+        if (limited.status_code, limited.headers.get("Retry-After")) != (503, "7"):
+            raise Exception(f"a rate limit gave {limited.status_code} / Retry-After {limited.headers.get('Retry-After')}, expected 503 / 7")
+        reply.update(status=500, headers={}, body={"success": False, "error": "Internal server error"})
+        down = client.get("/api/profile", headers=headers)
+        if down.status_code != 503 or "Retry-After" in down.headers:
+            raise Exception(f"a server error gave {down.status_code}, expected a plain 503")
+        pass_test("flask_middleware() — 401 only for a refused token, 503 when FIPSign could not check")
+    except ImportError:
+        log("flask_middleware()", "skipped — Flask is not installed")
+    except Exception as err:
+        fail_test("flask_middleware() — 401 vs 503", err)
+
+    stub.shutdown()
+
+    try:
+        em = pq.mandate.emit(agent_id="failure_test", issued_by="test-sdk", scope=["read", "write"], budget_total=1, expires_in_seconds=600).mandate
+        steps = [("suspend", pq.mandate.suspend), ("resume", pq.mandate.resume), ("revoke", pq.mandate.revoke)]
+        for name, fn in steps:
+            r = fn(em.id)
+            if r.scope != ["read", "write"] or not r.updatedAt:
+                raise Exception(f"{name}() came back with scope={r.scope} updatedAt={r.updatedAt}")
+            log(name + "()", f"status={r.status} scope={r.scope} updatedAt={r.updatedAt}")
+        pass_test("mandate.suspend() / resume() / revoke() — the result carries scope and updatedAt")
+    except Exception as err:
+        fail_test("mandate PATCH results — scope and updatedAt", err)
 
     # ─── Summary ─────────────────────────────────────────────────────────────
     total = passed + failed

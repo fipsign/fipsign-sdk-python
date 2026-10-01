@@ -48,7 +48,14 @@ def flask_middleware(pq: PQAuth) -> Callable:
 
     Reads ``Authorization: Bearer <base64(token_json)>`` from the request.
     On success, sets ``flask.g.fipsign_user`` to the decoded payload dict.
-    On failure, returns a 401 JSON response.
+
+    Answers 401 only when the token is refused (``failure="rejected"``), or when the
+    Authorization header is missing or not a token. When FIPSign could not check the
+    token (rate limit, quota, timeout, network, server error, invalid API key) it answers
+    503 with ``{"error": "Authentication service temporarily unavailable"}``, plus a
+    ``Retry-After`` header when the wait is known, so the user is not logged out for
+    something that is not their fault. To log the real cause, call ``pq.verify()``
+    yourself and read ``error`` and ``failure``.
 
     Parameters
     ----------
@@ -94,7 +101,14 @@ def flask_middleware(pq: PQAuth) -> Callable:
 
             result = pq.verify(token)
             if not result.valid:
-                return jsonify({"error": result.error or "Invalid token"}), 401
+                if result.failure is None or result.failure == "rejected":
+                    return jsonify({"error": result.error or "Invalid token"}), 401
+                # FIPSign could not check the token: it is not to blame, so not a 401 (the app would log the user out).
+                response = jsonify({"error": "Authentication service temporarily unavailable"})
+                response.status_code = 503
+                if result.retry_after is not None:
+                    response.headers["Retry-After"] = str(result.retry_after)
+                return response
 
             g.fipsign_user = result.payload
             return f(*args, **kwargs)
@@ -110,8 +124,15 @@ def fastapi_middleware(pq: PQAuth) -> Callable:
     """
     FastAPI dependency that verifies a FIPSign Bearer token.
 
-    Use with ``Depends()``. Raises ``HTTPException(401)`` on invalid tokens.
-    Returns the decoded payload dict on success.
+    Use with ``Depends()``. Returns the decoded payload dict on success.
+
+    Raises ``HTTPException(401)`` only when the token is refused (``failure="rejected"``), or
+    when the Authorization header is missing or not a token. When FIPSign could not check the
+    token (rate limit, quota, timeout, network, server error, invalid API key) it raises
+    ``HTTPException(503)`` with the detail "Authentication service temporarily unavailable",
+    plus a ``Retry-After`` header when the wait is known, so the user is not logged out for
+    something that is not their fault. To log the real cause, call ``pq.verify()`` yourself
+    and read ``error`` and ``failure``.
 
     Parameters
     ----------
@@ -156,7 +177,14 @@ def fastapi_middleware(pq: PQAuth) -> Callable:
 
         result = pq.verify(token)
         if not result.valid:
-            raise HTTPException(status_code=401, detail=result.error or "Invalid token")
+            if result.failure is None or result.failure == "rejected":
+                raise HTTPException(status_code=401, detail=result.error or "Invalid token")
+            # FIPSign could not check the token: it is not to blame, so not a 401 (the app would log the user out).
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication service temporarily unavailable",
+                headers={"Retry-After": str(result.retry_after)} if result.retry_after is not None else None,
+            )
 
         return result.payload
 

@@ -73,6 +73,29 @@ To make a copied token useless on its own, emit the mandate with the agent's pub
 
 ---
 
+## When verify() says no
+
+`verify()` never raises. When `valid` is `False`, `failure` says why:
+
+| `failure` | Meaning | What to do |
+|---|---|---|
+| `"rejected"` | The token is not acceptable (bad signature, expired, revoked, ...) | Answer 401 |
+| `"rate_limited"` | Too many requests in the current minute. The token was not checked | Wait `retry_after` seconds and try again |
+| `"quota_exhausted"` | Free tokens and packs used up. The token was not checked | Buy a pack from the dashboard |
+| `"unavailable"` | FIPSign could not answer (timeout, network, server error, invalid API key). The token was not checked | Try again; answer 503 |
+
+```python
+verified = pq.verify(token)
+if not verified.valid and verified.failure == "rejected":
+    raise PermissionError("invalid token")                    # the token is bad
+if not verified.valid:
+    raise RuntimeError("could not check the token, try again")  # not the token's fault
+```
+
+`flask_middleware()` and `fastapi_middleware()` do this for you: 401 for a refused token, 503 (with `Retry-After` when known) for the rest.
+
+---
+
 ## Why ML-DSA-65?
 
 JWT with RS256/ES256 and standard OAuth tokens rely on ECDSA or RSA — both breakable by Shor's algorithm on a sufficiently powerful quantum computer. ML-DSA-65 is based on lattice problems (Module-LWE / Module-SIS) with no known quantum speedup. Standardized by NIST in August 2024 as FIPS 204.

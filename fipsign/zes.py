@@ -102,7 +102,7 @@ class Zes:
         ZesVerifyResult
             .valid       — True if the token is cryptographically valid
             .dataMatches — True if data hashes to the same value in the token
-            .payload, .error — same as VerifyResult
+            .payload, .error, .failure, .retry_after — same as VerifyResult
 
         Examples
         --------
@@ -124,4 +124,6 @@ class Zes:
             dataMatches=data_matches,
             payload=result.payload,
             error=result.error,
+            failure=result.failure,
+            retry_after=result.retry_after,
         )

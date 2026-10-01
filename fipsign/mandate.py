@@ -461,7 +461,11 @@ class MandateClient:
             "PATCH", _mandate_path(mandate_id), json={"action": "suspend"}
         )
         return MandatePatchResult(
-            id=data["id"], status=data["status"], message=data.get("message")
+            id=data["id"],
+            status=data["status"],
+            scope=data.get("scope"),
+            updatedAt=data.get("updatedAt"),
+            message=data.get("message"),
         )
 
     def resume(self, mandate_id: str) -> MandatePatchResult:
@@ -480,7 +484,12 @@ class MandateClient:
         data = self._client._request(
             "PATCH", _mandate_path(mandate_id), json={"action": "resume"}
         )
-        return MandatePatchResult(id=data["id"], status=data["status"])
+        return MandatePatchResult(
+            id=data["id"],
+            status=data["status"],
+            scope=data.get("scope"),
+            updatedAt=data.get("updatedAt"),
+        )
 
     def revoke(self, mandate_id: str) -> MandatePatchResult:
         """
@@ -496,7 +505,12 @@ class MandateClient:
         data = self._client._request(
             "PATCH", _mandate_path(mandate_id), json={"action": "revoke"}
         )
-        return MandatePatchResult(id=data["id"], status=data["status"])
+        return MandatePatchResult(
+            id=data["id"],
+            status=data["status"],
+            scope=data.get("scope"),
+            updatedAt=data.get("updatedAt"),
+        )
 
     # ── get() / list() / list_all() ──────────────────────────────────────────
 

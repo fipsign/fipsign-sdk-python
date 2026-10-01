@@ -15,6 +15,7 @@ import requests
 from requests.exceptions import ConnectionError, Timeout
 
 from .errors import PQAuthError
+from .utils import api_error, parse_retry_after, verify_failure_result
 from .types import (
     HealthResult,
     MonthlyEntry,
@@ -110,16 +111,18 @@ class PQAuth:
 
     # ── Private: HTTP wrapper ─────────────────────────────────────────────────
 
-    def _request(
+    def _send(
         self,
         method: str,
         path: str,
         *,
         json: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    ) -> requests.Response:
+        """One call to the API. Returns the response whatever its status; raises PQAuthError
+        only when no response arrived (TIMEOUT or NETWORK_ERROR)."""
         url = f"{self._base_url}{path}"
         try:
-            resp = self._session.request(
+            return self._session.request(
                 method,
                 url,
                 json=json,
@@ -132,6 +135,15 @@ class PQAuth:
         except Exception as exc:
             raise PQAuthError(f"Network error: {exc}", "NETWORK_ERROR")
 
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        resp = self._send(method, path, json=json)
+
         try:
             data = resp.json()
         except ValueError:
@@ -142,11 +154,7 @@ class PQAuth:
             )
 
         if not resp.ok or not data.get("success", False):
-            raise PQAuthError(
-                data.get("error") or f"Request failed with status {resp.status_code}",
-                "API_ERROR",
-                resp.status_code,
-            )
+            raise api_error(resp.status_code, data, parse_retry_after(resp.headers.get("Retry-After")))
 
         return data
 
@@ -242,6 +250,11 @@ class PQAuth:
         ``error`` message on any failure (invalid signature, expired, revoked,
         network error, etc.).
 
+        ``failure`` tells a token that was refused (``"rejected"``) from a check
+        that could not be done (``"rate_limited"``, ``"quota_exhausted"``,
+        ``"unavailable"``; see VerifyFailure). Decide on ``failure``, not on the
+        text of ``error``. Only ``"rejected"`` means the token is bad.
+
         Checks: ML-DSA-65 signature · token expiry · revocation list.
 
         Cost: 1 token.
@@ -257,6 +270,8 @@ class PQAuth:
             .valid   — True if the token is valid
             .payload — decoded payload dict (sub, iat, exp + custom fields)
             .error   — error message string when valid=False
+            .failure — "rejected" | "rate_limited" | "quota_exhausted" | "unavailable" when valid=False
+            .retry_after — seconds to wait, only with failure="rate_limited"
 
         Examples
         --------
@@ -266,16 +281,26 @@ class PQAuth:
         >>> user_id = result.payload["sub"]
         """
         try:
-            data = self._request(
-                "POST",
-                "/verify",
-                json={"token": token.to_dict()},
-            )
-            return VerifyResult(valid=True, payload=data.get("payload"))
-        except PQAuthError as exc:
-            return VerifyResult(valid=False, error=exc.message)
+            body = {"token": token.to_dict()}
         except Exception as exc:
-            return VerifyResult(valid=False, error=str(exc))
+            # Not a token object at all: nothing to send, so nothing for FIPSign to refuse or fail on.
+            return VerifyResult(valid=False, error=str(exc), failure="rejected")
+        try:
+            resp = self._send("POST", "/verify", json=body)
+            try:
+                data = resp.json()
+            except ValueError:
+                data = None
+            if resp.ok and isinstance(data, dict) and data.get("success", False):
+                return VerifyResult(valid=True, payload=data.get("payload"))
+            return verify_failure_result(
+                resp.status_code, data, parse_retry_after(resp.headers.get("Retry-After"))
+            )
+        except PQAuthError as exc:
+            # No response arrived (timeout, network): the token was not checked.
+            return VerifyResult(valid=False, error=exc.message, failure="unavailable")
+        except Exception as exc:
+            return VerifyResult(valid=False, error=str(exc), failure="unavailable")
 
     # ── revoke() ──────────────────────────────────────────────────────────────
 
