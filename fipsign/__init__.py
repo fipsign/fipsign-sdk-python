@@ -130,4 +130,4 @@ try:
     from importlib.metadata import version as _version
     __version__ = _version("fipsign-sdk")
 except Exception:
-    __version__ = "0.13.0"  # fallback si el paquete no está instalado
+    __version__ = "0.13.1"  # fallback si el paquete no está instalado
