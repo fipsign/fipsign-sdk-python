@@ -19,6 +19,7 @@ except ImportError:
         "AsyncPQAuth requires httpx. Install it with: pip install fipsign-sdk[async]"
     )
 
+from .ca import _verify_crl
 from .errors import PQAuthError
 from .utils import (
     api_error, canonicalize_for_signing, parse_retry_after, verify_failure_result, zes_hash,
@@ -53,6 +54,7 @@ from .types import (
     UsageResult,
     VerifyResult,
     VerifyCertResult,
+    VerifyCrlResult,
     ZesSignResult,
     ZesVerifyResult,
     _parse_certificate,
@@ -271,7 +273,8 @@ class AsyncCA:
         CaGetCrlResult
             .crl    — list of CrlEntry (certId, revokedAt, reason)
             .format — "pqcert" or "x509"
-            .raw    — for x509: full signed CRL object with ML-DSA-65 signature
+            .raw    — the full signed CRL object with the ML-DSA-65 signature (both
+                      formats); check it with verify_crl(). None for a plain array answer.
 
         Examples
         --------
@@ -482,6 +485,26 @@ class AsyncCA:
             )
         except Exception as exc:
             return VerifyCertResult(valid=False, error=str(exc))
+
+    def verify_crl(
+        self,
+        crl: Union[CaGetCrlResult, Dict[str, Any]],
+        root: Union[PQCert, Dict[str, Any], str],
+    ) -> VerifyCrlResult:
+        """
+        Check that a revocation list was signed by this CA.
+
+        Not async — cryptographic verification is purely in-memory.
+        Mirrors CA.verify_crl() exactly: see its documentation. Never raises.
+
+        Examples
+        --------
+        >>> crl = await pq.ca.get_crl()
+        >>> check = pq.ca.verify_crl(crl, root_cert)
+        >>> if not check.valid:
+        ...     raise PermissionError(check.error)
+        """
+        return _verify_crl(crl, root)
 
     def is_cert_revoked(
         self,

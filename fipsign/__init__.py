@@ -52,7 +52,7 @@ from .types import (
     CaRevokeCertResult,
     CaGetCertResult, CaGetCertMeta, CaCertStatus,
     CaGetCrlResult, CrlEntry,
-    VerifyCertResult,
+    VerifyCertResult, VerifyCrlResult,
     # Mandate
     Mandate, MandateStatus,
     MandateEmitResult, MandateEmitMandate, MandateEmitUsage,
@@ -103,7 +103,7 @@ __all__ = [
     "CaRevokeCertResult",
     "CaGetCertResult", "CaGetCertMeta", "CaCertStatus",
     "CaGetCrlResult", "CrlEntry",
-    "VerifyCertResult",
+    "VerifyCertResult", "VerifyCrlResult",
     # Mandate
     "Mandate", "MandateStatus",
     "MandateEmitResult", "MandateEmitMandate", "MandateEmitUsage",
@@ -130,4 +130,4 @@ try:
     from importlib.metadata import version as _version
     __version__ = _version("fipsign-sdk")
 except Exception:
-    __version__ = "0.14.0"  # fallback si el paquete no está instalado
+    __version__ = "0.15.0"  # fallback si el paquete no está instalado

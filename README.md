@@ -94,6 +94,21 @@ if not verified.valid:
 
 `flask_middleware()` and `fastapi_middleware()` do this for you: 401 for a refused token, 503 (with `Retry-After` when known) for the rest.
 
+## Check the revocation list of your CA
+
+`ca.get_crl()` returns the certificates your CA has revoked, and the list is signed by the CA (ML-DSA-65). `ca.verify_crl()` checks that signature offline, so a list that was altered on the way, or that belongs to another CA, is not taken as good:
+
+```python
+revocations = pq.ca.get_crl()
+check = pq.ca.verify_crl(revocations, root_cert)  # the CA_ROOT you saved when the CA was created (a PEM string for an X.509 CA)
+if not check.valid:
+    raise RuntimeError(check.error)
+if pq.ca.is_cert_revoked(cert, revocations.crl):
+    raise PermissionError("revoked")
+```
+
+The signature covers `generatedAt`, so an old list cannot pass as a new one, but a correctly signed old list is still valid: `check.generatedAt` tells you when it was made, and how old a list you accept is up to you. `verify_crl()` is offline, so it is a plain call with `AsyncPQAuth` too. Details: the CA chapter of the [guide](https://fipsign.dev/guide).
+
 ---
 
 ## Why ML-DSA-65?

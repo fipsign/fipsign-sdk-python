@@ -51,12 +51,18 @@ ca.verify_x509_cert(cert_pem, root_pem)
     Never raises — returns VerifyCertResult(valid, cert, error).
     Mirrors ca.verifyX509Cert() from the JS SDK.
 
+ca.verify_crl(crl, root)
+    Verifies offline (no API call) that a revocation list was signed by the CA,
+    for both formats: the CA_ROOT of a PQCert CA, or the root PEM of an X.509 CA.
+    Never raises — returns VerifyCrlResult(valid, generatedAt, error).
+    Mirrors ca.verifyCrl() from the JS SDK.
+
 The typical FIPSign workflow is:
   1. Server (or device setup script) generates keypair with generate_key_pair()
   2. Server issues cert with Python SDK (pq.ca.issue())
   3. Server or device verifies cert with pq.ca.verify_cert() (PQCert)
      or pq.ca.verify_x509_cert() (X.509)
-  4. Server checks revocation with Python SDK (pq.ca.get_crl() + is_cert_revoked())
+  4. Server checks revocation with Python SDK (pq.ca.get_crl() + pq.ca.verify_crl() + is_cert_revoked())
 
 All operations work fully from Python.
 """
@@ -82,6 +88,7 @@ from .types import (
     KeyPairResult,
     PQCert,
     VerifyCertResult,
+    VerifyCrlResult,
     _parse_certificate,
 )
 
@@ -172,6 +179,126 @@ def generate_key_pair() -> KeyPairResult:
     return KeyPairResult(publicKey=pub_b64, secretKey=seed_b64)
 
 
+# ─── Revocation list verification (offline) ───────────────────────────────────
+
+class _CrlInvalid(Exception):
+    """The list is not valid; the message says why. Internal: verify_crl() turns it into a VerifyCrlResult."""
+
+
+def _crl_entry(e: Any) -> Dict[str, Any]:
+    """An entry (CrlEntry or dict) as the three fields that are signed, to compare what was read with what was signed."""
+    if isinstance(e, CrlEntry):
+        return {"certId": e.certId, "reason": e.reason, "revokedAt": e.revokedAt}
+    if isinstance(e, dict):
+        return {"certId": e.get("certId"), "reason": e.get("reason"), "revokedAt": e.get("revokedAt")}
+    return {"not an entry": repr(e)}
+
+
+def _crl_check(crl: Any, root: Any) -> int:
+    """Return the signed generatedAt of the list, or raise _CrlInvalid."""
+    # ── The signed object: the list itself (a dict), or the ``raw`` of a get_crl() result ────────────────────
+    if isinstance(crl, CaGetCrlResult):
+        signed = crl.raw
+        if not isinstance(signed, dict) or not isinstance(signed.get("signature"), str):
+            raise _CrlInvalid(
+                "This list is not signed: pass the result of get_crl() or the signed crl object, "
+                "from a FIPSign that signs the list"
+            )
+        # What the caller reads from the result (crl, caId, subject, generatedAt) has to be what was signed.
+        signed_entries = signed.get("revokedCerts")
+        if (
+            not isinstance(signed_entries, list) or not isinstance(crl.crl, list)
+            or crl.caId != signed.get("caId") or crl.subject != signed.get("subject")
+            or crl.generatedAt != signed.get("generatedAt")
+            or canonicalize_for_signing([_crl_entry(e) for e in crl.crl])
+            != canonicalize_for_signing([_crl_entry(e) for e in signed_entries])
+        ):
+            raise _CrlInvalid("The entries of this result (crl, caId, subject, generatedAt) are not the signed ones (raw)")
+    elif isinstance(crl, dict):
+        if not isinstance(crl.get("signature"), str):
+            raise _CrlInvalid(
+                "This list is not signed: pass the result of get_crl() or the signed crl object, "
+                "from a FIPSign that signs the list"
+            )
+        signed = crl
+    else:
+        raise _CrlInvalid("Expected the result of get_crl() or the signed list (the crl dict of GET /ca/crl)")
+
+    ca_id, generated_at = signed.get("caId"), signed.get("generatedAt")
+    if (
+        not isinstance(ca_id, str) or not isinstance(signed.get("revokedCerts"), list)
+        or not isinstance(generated_at, int) or isinstance(generated_at, bool)
+    ):
+        raise _CrlInvalid("Malformed list: caId, generatedAt and revokedCerts are required")
+    if signed.get("algorithm") != "ML-DSA-65":
+        raise _CrlInvalid(f"Unsupported algorithm: {signed.get('algorithm')}. Expected ML-DSA-65")
+
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.mldsa import MLDSA65PublicKey
+    except ImportError:
+        raise _CrlInvalid(
+            "verify_crl() requires cryptography >= 48.0.0. Install with: pip install 'cryptography>=48.0.0'"
+        ) from None
+
+    # ── The public key of the CA, from its root certificate ──────────────────────────────────────────────────
+    fmt = signed.get("format")
+    public_key: Any
+    if fmt == "pqcert":
+        pqcert_hint = "This list is from a PQCert CA: pass its CA_ROOT certificate (a PQCert, or the dict of its JSON)"
+        if isinstance(root, dict):
+            try:
+                root = PQCert.from_dict(root)
+            except Exception:
+                raise _CrlInvalid(pqcert_hint) from None
+        if not isinstance(root, PQCert) or root.type != "CA_ROOT":
+            raise _CrlInvalid(pqcert_hint)
+        if ca_id != root.id:
+            raise _CrlInvalid("This list was not issued by this CA")
+        try:
+            public_key = MLDSA65PublicKey.from_public_bytes(base64.b64decode(root.publicKey, validate=True))
+        except Exception:
+            raise _CrlInvalid("The CA_ROOT certificate has a publicKey that is not a valid ML-DSA-65 key") from None
+    elif fmt == "x509":
+        if not isinstance(root, str):
+            raise _CrlInvalid("This list is from an X.509 CA: pass its root certificate in PEM form (a string)")
+        try:
+            from cryptography import x509
+            root_cert = x509.load_pem_x509_certificate(root.encode())
+            root_oid = root_cert.signature_algorithm_oid.dotted_string
+            public_key = root_cert.public_key()
+        except Exception:
+            raise _CrlInvalid("The root certificate could not be read: pass the PEM of the CA root certificate") from None
+        if root_oid != _OID_ML_DSA_65:
+            raise _CrlInvalid(f"Unsupported root CA algorithm: {root_oid}. Expected ML-DSA-65 ({_OID_ML_DSA_65})")
+        if not isinstance(public_key, MLDSA65PublicKey):
+            raise _CrlInvalid("The root certificate does not hold an ML-DSA-65 public key")
+    else:
+        raise _CrlInvalid(f"Unknown list format: {fmt}")
+
+    # ── The signature: ML-DSA-65 over the canonical JSON of the list without its signature ────────────────────
+    try:
+        message = canonicalize_for_signing({k: v for k, v in signed.items() if k != "signature"}).encode("utf-8")
+    except Exception:
+        raise _CrlInvalid("Malformed list: it cannot be written as JSON") from None
+    try:
+        public_key.verify(base64.b64decode(signed["signature"], validate=True), message)
+    except (InvalidSignature, ValueError):
+        # a signature of the wrong size or encoding is simply not a valid signature
+        raise _CrlInvalid("Invalid list signature — not signed by this CA") from None
+    return generated_at
+
+
+def _verify_crl(crl: Any, root: Any) -> VerifyCrlResult:
+    """Shared by CA.verify_crl() and AsyncCA.verify_crl(). Never raises."""
+    try:
+        return VerifyCrlResult(valid=True, generatedAt=_crl_check(crl, root))
+    except _CrlInvalid as exc:
+        return VerifyCrlResult(valid=False, error=str(exc))
+    except Exception as exc:  # noqa: BLE001 - verify_crl() never raises
+        return VerifyCrlResult(valid=False, error=str(exc) or "Unknown error")
+
+
 # ─── CA sub-client ────────────────────────────────────────────────────────────
 
 class CA:
@@ -200,8 +327,11 @@ class CA:
     # pqcert CA: result.certificate is a PQCert dataclass
     # x509 CA:   result.certificate is a PEM string
 
-    # Check revocation (works for both formats)
+    # Check revocation (works for both formats). verify_crl() checks that the list was signed by the CA
+    # (root_cert: the CA_ROOT PQCert you saved when the CA was created, or the PEM string of an X.509 CA)
     crl_result = pq.ca.get_crl()
+    if not pq.ca.verify_crl(crl_result, root_cert).valid:
+        raise PermissionError("The revocation list is not the one the CA signed")
     if pq.ca.is_cert_revoked(result.certificate, crl_result.crl):
         raise PermissionError("Device certificate has been revoked")
 
@@ -457,14 +587,15 @@ class CA:
             .crl         — list of CrlEntry (certId, revokedAt, reason)
             .generatedAt — Unix timestamp
             .format      — "pqcert" or "x509"
-            .raw         — for x509 CAs: the full signed CRL object including
-                           the ML-DSA-65 signature field. None for pqcert CAs.
+            .raw         — the full signed CRL object including the ML-DSA-65
+                           signature field (both formats). None only when the
+                           answer is a plain array without a signature.
 
         Notes
         -----
-        For x509 CAs, the CRL is signed with ML-DSA-65 by the CA private key.
-        The raw signed object (including ``signature``) is available in
-        ``result.raw`` if you need to verify the CRL signature offline.
+        The CRL is signed with ML-DSA-65 by the CA private key, for both formats.
+        Check the signature with ``verify_crl(result, root)`` before you trust the
+        list; the signed object (including ``signature``) is in ``result.raw``.
 
         CrlEntry.reason may be None if no reason was provided at revocation time.
 
@@ -475,26 +606,27 @@ class CA:
         >>> for entry in result.crl:
         ...     print(f"{entry.certId} — revoked at {entry.revokedAt}")
         >>>
-        >>> # X.509 CA: verify CRL signature independently
-        >>> if result.raw:
-        ...     print(result.raw["signature"][:16] + "...")
+        >>> # Check that the list was signed by the CA
+        >>> check = pq.ca.verify_crl(result, root_cert)
+        >>> if not check.valid:
+        ...     raise PermissionError(check.error)
         """
         data = self._client._request("GET", "/ca/crl")
 
-        # The backend returns different shapes for pqcert vs x509:
+        # The answer carries the list signed by the CA, for both formats:
         #
-        # pqcert: { success, caId, subject, crl: [ {certId, revokedAt, reason} ], generatedAt }
+        #   { success, crl: { caId, subject, format, algorithm, generatedAt,
+        #                     revokedCerts: [ {certId, revokedAt, reason} ],
+        #                     signature }, generatedAt }
         #
-        # x509:   { success, crl: { caId, subject, format, algorithm, generatedAt,
-        #                           revokedCerts: [ {certId, revokedAt, reason} ],
-        #                           signature }, generatedAt }
-        #
+        # An answer with a plain array, { success, caId, subject, crl: [ ... ], generatedAt }, has no signature:
+        # it is still read, with raw=None.
         # We normalize both into CaGetCrlResult with a flat crl: List[CrlEntry].
 
         raw_crl = data.get("crl")
 
         if isinstance(raw_crl, dict):
-            # x509 format — nested object with revokedCerts
+            # the signed list — nested object with revokedCerts
             entries = [
                 CrlEntry(
                     certId    = e["certId"],
@@ -512,7 +644,7 @@ class CA:
                 raw         = raw_crl,
             )
         else:
-            # pqcert format — flat list
+            # a plain array of entries (no signature)
             entries = [
                 CrlEntry(
                     certId    = e["certId"],
@@ -782,6 +914,53 @@ class CA:
                 valid=False,
                 error=str(exc),
             )
+
+    def verify_crl(
+        self,
+        crl: Union[CaGetCrlResult, Dict[str, Any]],
+        root: Union[PQCert, Dict[str, Any], str],
+    ) -> VerifyCrlResult:
+        """
+        Check that a revocation list was signed by this CA. Offline: no API call, ML-DSA-65 locally.
+
+        Pass the result of ``get_crl()`` (or the signed ``crl`` dict of the REST answer) and the root certificate of
+        the CA: the CA_ROOT ``PQCert`` (or the dict of its JSON) of a PQCert CA, or the PEM string of an X.509 CA.
+        When ``valid`` is True, the list is exactly what the CA signed at ``generatedAt``: nobody hid, added or changed
+        a revocation, and it is not a list of another CA. When you pass the result of ``get_crl()``, it also has to be
+        the signed list (what you read from ``.crl`` is what was signed).
+
+        The signature covers ``generatedAt``, so an old list cannot pass as a new one, but an old list that was
+        signed is still valid: decide how old a list you accept (``time.time() - result.generatedAt``).
+        The expiry of the root is not checked: ``verify_cert()`` and ``verify_x509_cert()`` do that for certificates.
+
+        Never raises — always returns a VerifyCrlResult.
+        Mirrors ``ca.verifyCrl()`` from the JS SDK.
+
+        Parameters
+        ----------
+        crl : CaGetCrlResult | dict
+            The result of ``get_crl()``, or the signed list (the ``crl`` object of GET /ca/crl).
+        root : PQCert | dict | str
+            PQCert CA: the CA_ROOT certificate shown once at CA creation time (a ``PQCert``, or its dict).
+            X.509 CA: the root certificate PEM string.
+
+        Returns
+        -------
+        VerifyCrlResult
+            .valid       — True if the list is the one this CA signed.
+            .generatedAt — Unix time at which the CA generated and signed the list. None when valid=False.
+            .error       — Why the list is not valid, when valid=False.
+
+        Examples
+        --------
+        >>> crl = pq.ca.get_crl()
+        >>> check = pq.ca.verify_crl(crl, root_cert)
+        >>> if not check.valid:
+        ...     raise PermissionError(check.error)
+        >>> if pq.ca.is_cert_revoked(device_cert, crl.crl):
+        ...     raise PermissionError("Device revoked")
+        """
+        return _verify_crl(crl, root)
 
     def is_cert_revoked(
         self,

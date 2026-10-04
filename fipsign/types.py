@@ -474,12 +474,12 @@ class CaGetCrlResult:
     generatedAt : int
         Unix timestamp when the CRL was generated.
     format : str
-        "pqcert" or "x509". For x509 CAs the CRL is also signed with ML-DSA-65;
-        the raw signed CRL object is available in ``raw`` if you need the signature
-        for verification.
+        "pqcert" or "x509". The CRL is signed with ML-DSA-65 by the CA, for both
+        formats: check the signature with ca.verify_crl().
     raw : dict | None
-        For x509 CAs: the full signed CRL object from the backend, including
-        ``signature`` field. None for pqcert CAs.
+        The full signed CRL object from the backend, including its ``signature``
+        field (both formats). None only for an answer that is a plain array
+        without a signature.
     """
     caId:        str
     subject:     str
@@ -524,6 +524,28 @@ class VerifyCertResult:
     valid: bool
     cert:  Optional[Union[PQCert, str]] = None  # PQCert for pqcert, str (PEM) for x509
     error: Optional[str]                = None
+
+
+@dataclass
+class VerifyCrlResult:
+    """
+    Returned by ca.verify_crl().
+
+    Attributes
+    ----------
+    valid : bool
+        True if the revocation list was signed by the CA whose root you passed, and
+        what you read from it is what was signed.
+    generatedAt : int | None
+        Unix time (seconds) at which the CA generated and signed the list. Only when
+        valid. The signature covers it, so it cannot be moved forward: how old a list
+        you are willing to accept is up to you (``time.time() - generatedAt``).
+    error : str | None
+        Why the list is not valid, when valid=False.
+    """
+    valid:       bool
+    generatedAt: Optional[int] = None
+    error:       Optional[str] = None
 
 
 # ─── Key generation ───────────────────────────────────────────────────────────

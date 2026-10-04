@@ -7,8 +7,8 @@ Usage:
     FIPSIGN_API_KEY=pqa_... python tests/test_sdk.py
 
 Optional:
-    FIPSIGN_ROOT_CERT_JSON="$(cat root-cert.json)"  — enables offline verify_cert() tests (PQCert CA)
-    FIPSIGN_ROOT_CERT_PEM="$(cat root-ca.pem)"      — enables offline verify_x509_cert() tests (X.509 CA)
+    FIPSIGN_ROOT_CERT_JSON="$(cat root-cert.json)"  — enables offline verify_cert() and verify_crl() tests (PQCert CA)
+    FIPSIGN_ROOT_CERT_PEM="$(cat root-ca.pem)"      — enables offline verify_x509_cert() and verify_crl() tests (X.509 CA)
 
 Token cost: ~41 tokens per run. Runtime: ~3-4 minutes.
     Includes 2 expiry tests that sign with expires_in_seconds=60 and wait 62 seconds each.
@@ -817,14 +817,11 @@ def run() -> None:
         log("subject",     r.subject)
         log("format",      r.format)
         log("crl entries", str(len(r.crl)))
-        if r.format == "x509":
-            if r.raw is None:
-                raise AssertionError("x509 CRL: raw should not be None")
-            if not r.raw.get("signature"):
-                raise AssertionError("x509 CRL: raw.signature is missing")
-            log("raw.signature", r.raw["signature"][:16] + "...")
+        if r.raw is None or not r.raw.get("signature"):
+            raise AssertionError("the signed list is missing from raw")
+        log("raw.signature", r.raw["signature"][:16] + "...")
         crl_before = r.crl
-        pass_test("ca.get_crl() — CRL returned with correct shape" + (" (incl. raw.signature for x509)" if r.format == "x509" else ""))
+        pass_test("ca.get_crl() — CRL returned with correct shape (incl. the signed list in raw)")
     except Exception as err:
         fail_test("ca.get_crl()", err)
 
@@ -929,13 +926,14 @@ def run() -> None:
 
     # 14.10 ca.get_crl() — after revocation
     crl_after = None
+    crl_after_result = None
     try:
         r = pq.ca.get_crl()
         if not isinstance(r.crl, list): raise AssertionError("crl is not a list")
-        if r.format == "x509":
-            if r.raw is None or not r.raw.get("signature"):
-                raise AssertionError("x509 CRL after revocation: raw.signature missing")
+        if r.raw is None or not r.raw.get("signature"):
+            raise AssertionError("CRL after revocation: the signed list (raw.signature) is missing")
         crl_after = r.crl
+        crl_after_result = r
         entry = next((e for e in r.crl if e.certId == issued_cert_id), None)
         if entry:
             reason_is_valid = entry.reason is None or isinstance(entry.reason, str)
@@ -946,6 +944,34 @@ def run() -> None:
         pass_test("ca.get_crl() after revocation — CRL fetched, reason field is str or None")
     except Exception as err:
         fail_test("ca.get_crl() after revocation", err)
+
+    # 14.10b ca.verify_crl() — optional (requires FIPSIGN_ROOT_CERT_JSON or FIPSIGN_ROOT_CERT_PEM, as 14.4)
+    if ROOT_CERT_JSON_STR or ROOT_CERT_PEM_STR:
+        try:
+            if crl_after_result is None:
+                raise AssertionError("skipped — previous steps failed")
+            if crl_after_result.format == "x509":
+                crl_root = ROOT_CERT_PEM_STR
+            else:
+                from fipsign.types import PQCert as _PQCert
+                crl_root = _PQCert.from_dict(json.loads(ROOT_CERT_JSON_STR)) if ROOT_CERT_JSON_STR else None
+            if not crl_root:
+                raise AssertionError(f"no root certificate for this kind of CA ({crl_after_result.format})")
+            ok = pq.ca.verify_crl(crl_after_result, crl_root)
+            if not ok.valid:
+                raise AssertionError(f"the list did not verify: {ok.error}")
+            if abs(time.time() - ok.generatedAt) > 120:
+                raise AssertionError(f"generatedAt is not recent: {ok.generatedAt}")
+            hidden = dict(crl_after_result.raw)
+            hidden["revokedCerts"] = [e for e in hidden["revokedCerts"] if e["certId"] != issued_cert_id]
+            if pq.ca.verify_crl(hidden, crl_root).valid:
+                raise AssertionError("the same list without the revocation must not verify")
+            log("generatedAt", datetime.fromtimestamp(ok.generatedAt).isoformat())
+            pass_test("ca.verify_crl() — the signed list verifies with the root; without the revocation it does not")
+        except Exception as err:
+            fail_test("ca.verify_crl()", err)
+    else:
+        print(f"  {DIM}  → ca.verify_crl() tests skipped (no FIPSIGN_ROOT_CERT_JSON / FIPSIGN_ROOT_CERT_PEM){RESET}")
 
     # 14.11 ca.is_cert_revoked() — after revocation, using certId string
     try:
