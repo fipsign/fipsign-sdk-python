@@ -56,7 +56,7 @@ from .types import (
     # Mandate
     Mandate, MandateStatus,
     MandateEmitResult, MandateEmitMandate, MandateEmitUsage,
-    MandateVerifyResult, MandatePatchResult,
+    MandateVerifyResult, MandateVerifyFailure, MandatePatchResult,
     MandateGetResult, MandateListResult,
     MandateDenyReason,
 )
@@ -107,7 +107,7 @@ __all__ = [
     # Mandate
     "Mandate", "MandateStatus",
     "MandateEmitResult", "MandateEmitMandate", "MandateEmitUsage",
-    "MandateVerifyResult", "MandatePatchResult",
+    "MandateVerifyResult", "MandateVerifyFailure", "MandatePatchResult",
     "MandateGetResult", "MandateListResult",
     "MandateDenyReason",
 ]
@@ -130,4 +130,4 @@ try:
     from importlib.metadata import version as _version
     __version__ = _version("fipsign-sdk")
 except Exception:
-    __version__ = "0.13.1"  # fallback si el paquete no está instalado
+    __version__ = "0.14.0"  # fallback si el paquete no está instalado

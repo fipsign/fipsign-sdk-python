@@ -82,6 +82,24 @@ class SignResult:
 # Only "rejected" says something about the token. Do not log a user out because of the other three.
 VerifyFailure = Literal["rejected", "rate_limited", "quota_exhausted", "unavailable"]
 
+# Why mandate.verify() answered result="denied": the values of VerifyFailure, plus "outcome_unknown".
+#   "rejected"         FIPSign looked at the call and refused it (``reason`` says why: scope, budget, expired, revoked,
+#                      suspended, agent signature...) or the request was not well formed. Nothing was consumed.
+#   "rate_limited"     Your API key sent too many requests in the current minute. Nothing was consumed:
+#                      wait ``retry_after`` seconds and try again.
+#   "quota_exhausted"  Your free tokens and your packs are used up. Nothing was consumed (the mandate budget is given
+#                      back) and waiting does not help: buy a pack from the dashboard.
+#   "unavailable"      FIPSign answered but could not check the call (for example, an invalid API key). Nothing was consumed.
+#   "outcome_unknown"  NO usable answer arrived: timeout, network failure, an answer that could not be read, or a server
+#                      error. FIPSign may have granted the call, used up its budget and charged its tokens without you
+#                      ever hearing about it. Do not act as if it was granted and do not send it again blindly: with
+#                      ``agent_signature``, send the SAME call again while the signature is still valid ("granted" = it is
+#                      applied now, once; "agent_signature_replayed" = it was applied the first time); without one, compare
+#                      ``budgetConsumed`` of mandate.get(id) with the value you had before. See Mandate 02c in the guide.
+# Decide on ``failure``, not on the text of ``reason``. A call that was not granted is always result="denied", so code
+# that only checks ``result != "granted"`` keeps working: it never acts on a call that may not have been granted.
+MandateVerifyFailure = Literal["rejected", "rate_limited", "quota_exhausted", "unavailable", "outcome_unknown"]
+
 
 @dataclass
 class VerifyResult:
@@ -701,6 +719,13 @@ class MandateVerifyResult:
     actionMatched, budgetRemaining, expiresInSeconds : set when granted.
     authorizedScope : set when denied for scope_not_authorized.
     budgetConsumedUnits, budgetTotalUnits : set when denied for budget_exhausted.
+    failure : MandateVerifyFailure | None
+        Why ``result`` is "denied": ``"rejected"`` (FIPSign refused the call), ``"rate_limited"``,
+        ``"quota_exhausted"`` or ``"unavailable"`` (FIPSign answered and nothing was consumed), or
+        ``"outcome_unknown"`` (no usable answer: the call MAY have been granted and charged; see
+        MandateVerifyFailure for what to do). None when granted. Decide on ``failure``, not on ``reason``.
+    retry_after : int | None
+        Seconds to wait before trying again. Only set with ``failure="rate_limited"``.
     """
     result:               str  # "granted" | "denied"
     reason:               Optional[str]              = None
@@ -711,6 +736,8 @@ class MandateVerifyResult:
     budgetConsumedUnits:  Optional[int]                   = None
     budgetTotalUnits:     Optional[int]                    = None
     usage:                Optional[MandateEmitUsage]        = None
+    failure:              Optional[MandateVerifyFailure]     = None
+    retry_after:          Optional[int]                       = None
 
 
 @dataclass

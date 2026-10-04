@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import quote, urlencode
 
 from .errors import PQAuthError
+from .utils import parse_retry_after
 from .types import (
     Mandate as MandateState,
     MandateEmitMandate,
@@ -55,6 +56,7 @@ from .types import (
     MandateGetResult,
     MandateListResult,
     MandatePatchResult,
+    MandateVerifyFailure,
     MandateVerifyResult,
     PQToken,
     _parse_mandate,
@@ -185,7 +187,32 @@ def _verify_body(
     return body, None
 
 
-def _parse_verify_response(status_code: int, data: Any) -> MandateVerifyResult:
+def _failure_of(
+    status_code: int, data: Any, retry_after: Optional[int]
+) -> Tuple[MandateVerifyFailure, Optional[int]]:
+    """
+    What a POST /mandate/verify answer that is not "granted" or "denied" means.
+
+    FIPSign consumes nothing on a denial (403), a malformed request (400), an invalid API key
+    (401), an unsupported content type (415) or a 429, so any other 4xx is the same. Anything
+    else (a 5xx, or a status that should not happen) may have come after the call was applied:
+    "outcome_unknown". Returns (failure, retry_after).
+    """
+    body = data if isinstance(data, dict) else {}
+    if status_code == 429:
+        if body.get("code") == "token_quota_exhausted":
+            return "quota_exhausted", None
+        return "rate_limited", retry_after
+    if status_code == 400:
+        return "rejected", None
+    if 400 <= status_code < 500:
+        return "unavailable", None
+    return "outcome_unknown", None
+
+
+def _parse_verify_response(
+    status_code: int, data: Any, retry_after: Optional[int] = None
+) -> MandateVerifyResult:
     if isinstance(data, dict) and data.get("result") in ("granted", "denied"):
         return MandateVerifyResult(
             result=data["result"],
@@ -197,6 +224,7 @@ def _parse_verify_response(status_code: int, data: Any) -> MandateVerifyResult:
             budgetConsumedUnits=data.get("budgetConsumedUnits"),
             budgetTotalUnits=data.get("budgetTotalUnits"),
             usage=_parse_usage(data.get("usage")),
+            failure="rejected" if data["result"] == "denied" else None,
         )
 
     # Failures that never reach mandate-specific logic (invalid/missing
@@ -205,9 +233,12 @@ def _parse_verify_response(status_code: int, data: Any) -> MandateVerifyResult:
     # "result" field at all. Normalize those into the same denied shape
     # instead of silently dropping the real error message.
     error = data.get("error") if isinstance(data, dict) else None
+    failure, wait = _failure_of(status_code, data, retry_after)
     return MandateVerifyResult(
         result="denied",
         reason=error or f"Request failed with status {status_code}",
+        failure=failure,
+        retry_after=wait,
     )
 
 
@@ -332,6 +363,17 @@ class MandateClient:
         invalid API key — comes back as a MandateVerifyResult with
         result="denied", never an exception.
 
+        ``failure`` tells a denial FIPSign decided ("rejected", "rate_limited",
+        "quota_exhausted", "unavailable": nothing was consumed, repeating the
+        call is safe) from "outcome_unknown" (timeout, network failure, an
+        answer that could not be read, a server error: the call MAY have been
+        granted and charged without you hearing about it; see
+        MandateVerifyFailure for what to do). Decide on ``failure``, not on the
+        text of ``reason``. A call that is not granted is always
+        result="denied", so code that only checks ``result != "granted"``
+        never acts on a call that may not have been granted. The SDK never
+        repeats a call by itself: FIPSign does not recognise a repeated request.
+
         There is no local/offline mode for mandate verification, unlike
         pq.verify(): budget and scope are live, mutable state that can
         only be checked against the server, not the signature alone.
@@ -369,6 +411,9 @@ class MandateClient:
             .authorizedScope — set when denied for scope_not_authorized
             .budgetConsumedUnits, .budgetTotalUnits — set when denied
                       for budget_exhausted
+            .failure — set when denied: "rejected" | "rate_limited" |
+                      "quota_exhausted" | "unavailable" | "outcome_unknown"
+            .retry_after — seconds to wait, only with failure="rate_limited"
 
         Examples
         --------
@@ -383,7 +428,7 @@ class MandateClient:
         """
         body, problem = _verify_body(token, action, cost, agent_signature)
         if body is None:
-            return MandateVerifyResult(result="denied", reason=problem)
+            return MandateVerifyResult(result="denied", reason=problem, failure="rejected")
 
         try:
             resp = self._client._session.request(
@@ -393,15 +438,15 @@ class MandateClient:
                 timeout=self._client._timeout,
             )
         except Exception as exc:
-            return MandateVerifyResult(result="denied", reason=f"Network error: {exc}")
+            # No usable answer (timeout, network, an answer that broke off): the call may have been applied.
+            return MandateVerifyResult(
+                result="denied", reason=f"Network error: {exc}", failure="outcome_unknown"
+            )
 
         try:
             data = resp.json()
         except ValueError:
-            return MandateVerifyResult(
-                result="denied",
-                reason=f"Request failed with status {resp.status_code}",
-            )
+            data = None  # not JSON: _parse_verify_response() decides from the status alone
 
         # Deliberately NOT using self._client._request() here: a "denied"
         # result is a normal, expected outcome carrying real data (reason,
@@ -409,7 +454,9 @@ class MandateClient:
         # response — not an error to raise. _request() only forwards a
         # generic `error` field on failure, which this endpoint doesn't
         # use, so those fields would be lost if we let it raise.
-        return _parse_verify_response(resp.status_code, data)
+        return _parse_verify_response(
+            resp.status_code, data, parse_retry_after(resp.headers.get("Retry-After"))
+        )
 
     # ── narrow() / suspend() / resume() / revoke() ──────────────────────────
 

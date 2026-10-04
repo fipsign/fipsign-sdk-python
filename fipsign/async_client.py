@@ -628,7 +628,7 @@ class AsyncMandate:
         """
         body, problem = _mandate_verify_body(token, action, cost, agent_signature)
         if body is None:
-            return MandateVerifyResult(result="denied", reason=problem)
+            return MandateVerifyResult(result="denied", reason=problem, failure="rejected")
 
         try:
             resp = await self._client._http.request(
@@ -637,17 +637,19 @@ class AsyncMandate:
                 json=body,
             )
         except Exception as exc:
-            return MandateVerifyResult(result="denied", reason=f"Network error: {exc}")
+            # No usable answer (timeout, network, an answer that broke off): the call may have been applied.
+            return MandateVerifyResult(
+                result="denied", reason=f"Network error: {exc}", failure="outcome_unknown"
+            )
 
         try:
             data = resp.json()
         except ValueError:
-            return MandateVerifyResult(
-                result="denied",
-                reason=f"Request failed with status {resp.status_code}",
-            )
+            data = None  # not JSON: _parse_verify_response() decides from the status alone
 
-        return _mandate_parse_verify_response(resp.status_code, data)
+        return _mandate_parse_verify_response(
+            resp.status_code, data, parse_retry_after(resp.headers.get("Retry-After"))
+        )
 
     async def narrow(self, mandate_id: str, scope: List[str]) -> MandatePatchResult:
         """Shrink scope. Free, monotonic. See MandateClient.narrow() for full docs."""
