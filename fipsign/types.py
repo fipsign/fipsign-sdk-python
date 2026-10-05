@@ -714,9 +714,15 @@ class MandateEmitUsage:
 
 @dataclass
 class MandateEmitResult:
-    """Result of mandate.emit(). Cost: 2 tokens."""
+    """
+    Result of mandate.emit(). Cost: 2 tokens.
+
+    ``receipt`` is FIPSign's signature over the event "emitted" of this mandate (see MandateReceipt).
+    Keep it next to your own record of the mandate. None only if the answer carried none.
+    """
     mandate: MandateEmitMandate
     usage:   MandateEmitUsage
+    receipt: Optional["MandateReceipt"] = None
 
 
 @dataclass
@@ -748,6 +754,9 @@ class MandateVerifyResult:
         MandateVerifyFailure for what to do). None when granted. Decide on ``failure``, not on ``reason``.
     retry_after : int | None
         Seconds to wait before trying again. Only set with ``failure="rate_limited"``.
+    receipt : MandateReceipt | None
+        FIPSign's signature over the event this call produced. Only with ``receipt=True`` passed to
+        verify(), and only when FIPSign recorded the call (granted, or denied by a mandate check). None otherwise.
     """
     result:               str  # "granted" | "denied"
     reason:               Optional[str]              = None
@@ -760,6 +769,7 @@ class MandateVerifyResult:
     usage:                Optional[MandateEmitUsage]        = None
     failure:              Optional[MandateVerifyFailure]     = None
     retry_after:          Optional[int]                       = None
+    receipt:              Optional["MandateReceipt"]          = None
 
 
 @dataclass
@@ -770,6 +780,7 @@ class MandatePatchResult:
     scope:     Optional[List[str]] = None
     updatedAt: Optional[int]       = None
     message:   Optional[str]       = None  # only set by suspend() on an already-suspended mandate
+    receipt:   Optional["MandateReceipt"] = None  # FIPSign's signature over the event this change produced; None when nothing changed
 
 
 @dataclass
@@ -795,3 +806,285 @@ class MandateListResult:
     mandates:   List[Mandate]
     count:      int
     nextCursor: Optional[str] = None
+
+
+# ─── Mandate audit: events, receipts, export ──────────────────────────────────
+#
+# FIPSign keeps a log of everything that happens to a mandate (who emitted it, every call it granted or denied,
+# every change) as a chain of events, and signs what it records. These are the objects of that log.
+# Everything that carries a signature can be checked on your own machine: see fipsign/mandate_audit.py.
+
+#: What can be recorded about a mandate. The audit log keeps one event per occurrence.
+MandateEventType = Literal[
+    "emitted",
+    "verify_granted",
+    "verify_denied",
+    "verify_released",
+    "narrowed",
+    "suspended",
+    "resumed",
+    "revoked",
+    "chain_started",
+    "checkpoint",
+    "log_limit_reached",
+]
+
+#: ``"pinned"``: the key was fixed by you (``public_key`` or ``pin_fingerprint``): the check does not depend on
+#: FIPSign's word. ``"fipsign"``: you gave neither, so the keys came from FIPSign itself (mandate.verify_receipt() and
+#: mandate.verify_export() only): the check detects a receipt or a log that was altered, but cannot tell a key that
+#: FIPSign (or somebody who can write its database) replaced.
+MandateKeyTrust = Literal["pinned", "fipsign"]
+
+
+@dataclass
+class MandateEvent:
+    """
+    One entry of the audit log of a mandate. Entries are chained: ``hash`` is the SHA-256 (lowercase hex) of
+    ``prevHash + "\\n" + body``, where ``prevHash`` is the ``hash`` of the entry before it (64 zeros for the first).
+
+    ``body`` is a string: the exact text that was hashed (canonical JSON). Parse it with ``json.loads()`` to read the
+    event; never re-serialize it. ``at`` is Unix seconds.
+    """
+    seq:      int
+    type:     str  # MandateEventType
+    at:       int
+    prevHash: str
+    hash:     str
+    body:     str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "seq": self.seq, "type": self.type, "at": self.at,
+            "prevHash": self.prevHash, "hash": self.hash, "body": self.body,
+        }
+
+
+@dataclass
+class MandateProjectEvent(MandateEvent):
+    """An event as mandate.query_events() lists it: the event plus the mandate it belongs to."""
+    mandateId: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = MandateEvent.to_dict(self)
+        d["mandateId"] = self.mandateId
+        return d
+
+
+@dataclass
+class MandateReceipt:
+    """
+    FIPSign's signature over one event of one mandate, returned by mandate.emit(), the change calls (narrow, suspend,
+    resume, revoke) and, when you ask for it, mandate.verify(receipt=True). Keep it: it commits to the whole history of
+    the mandate up to that event, so the history cannot be rewritten later without the receipt showing it.
+
+    Check it with mandate.verify_receipt() or verify_mandate_receipt(). To keep it as JSON: ``json.dumps(receipt.to_dict())``;
+    what ``json.loads()`` gives back can be passed to verify_mandate_receipt() as it is.
+
+    Attributes
+    ----------
+    signed : str
+        The text that was signed: canonical JSON of ``{v, kind, projectId, mandateId, seq, hash, at}``.
+    signature : str
+        Base64, ML-DSA detached signature (FIPS 204) made with the project key.
+    algorithm : str
+        "ML-DSA-44", "ML-DSA-65" or "ML-DSA-87".
+    keyFingerprint : str
+        SHA-256 (lowercase hex) of the public key that made the signature.
+    event : MandateEvent
+        The event the signature is about.
+    """
+    signed:         str
+    signature:      str
+    algorithm:      str
+    keyFingerprint: str
+    event:          MandateEvent
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "signed": self.signed, "signature": self.signature, "algorithm": self.algorithm,
+            "keyFingerprint": self.keyFingerprint, "event": self.event.to_dict(),
+        }
+
+
+@dataclass
+class MandatePublicKey:
+    """
+    One public key of the project, as GET /public-keys lists it.
+
+    ``fingerprint`` is the SHA-256 (lowercase hex) of the public key bytes: the value a receipt carries as
+    ``keyFingerprint``. ``status`` is "current" or "retired". ``recordedAt`` is Unix seconds: when FIPSign wrote the key
+    down (not when the key was made). ``retiredAt`` is Unix seconds: when the project rotated it away; None for the
+    current key and for a key retired before the history existed.
+    """
+    fingerprint: str
+    algorithm:   str
+    publicKey:   str  # base64
+    status:      str  # "current" | "retired"
+    recordedAt:  int
+    retiredAt:   Optional[int] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "fingerprint": self.fingerprint, "algorithm": self.algorithm, "publicKey": self.publicKey,
+            "status": self.status, "recordedAt": self.recordedAt, "retiredAt": self.retiredAt,
+        }
+
+
+@dataclass
+class MandatePublicKeysResult:
+    """
+    Every public key this project has signed with: ``keys`` lists the current one first, then the retired ones, the
+    most recently retired first. A receipt is checked with the key that made it, so after a key rotation the old key
+    is still needed.
+    """
+    projectId: str
+    keys:      List[MandatePublicKey]
+    count:     int
+
+
+@dataclass
+class MandateLogHead:
+    """The end of the chain of a mandate as it is right now (mandate.events())."""
+    seq:               int
+    hash:              str
+    lastCheckpointSeq: int
+
+
+@dataclass
+class MandateEventsResult:
+    """
+    One page of mandate.events(), oldest event first.
+
+    ``nextAfter``: pass it as ``after`` to get the next page; None on the last page.
+    ``head``: the end of the chain as it is right now, or None when the mandate has no log yet.
+    """
+    mandateId: str
+    events:    List[MandateEvent]
+    count:     int
+    nextAfter: Optional[int] = None
+    head:      Optional[MandateLogHead] = None
+
+
+@dataclass
+class MandateEventsQueryResult:
+    """
+    One page of mandate.query_events(), newest event first.
+
+    ``nextCursor``: pass it as ``cursor`` to get the next page, exactly as received; None on the last page.
+    ``from_`` and ``to`` are the period that was searched (Unix seconds).
+    """
+    events:     List[MandateProjectEvent]
+    count:      int
+    nextCursor: Optional[str] = None
+    from_:      Optional[int] = None
+    to:         Optional[int] = None
+
+
+@dataclass
+class MandateExportHead:
+    """The live end of the chain, signed by FIPSign at the moment of the export. Only present while the mandate is alive."""
+    seq:               int
+    hash:              str
+    at:                int
+    source:            str
+    lastCheckpointSeq: int
+    signed:            str
+    signature:         str
+    algorithm:         str
+    keyFingerprint:    str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "seq": self.seq, "hash": self.hash, "at": self.at, "source": self.source,
+            "lastCheckpointSeq": self.lastCheckpointSeq, "signed": self.signed, "signature": self.signature,
+            "algorithm": self.algorithm, "keyFingerprint": self.keyFingerprint,
+        }
+
+
+@dataclass
+class MandateExportPage:
+    """
+    One page of mandate.export(): the events, FIPSign's signature over the end of the chain at this moment (``head``)
+    and the public keys of the project (``publicKeys``, the retired ones too, so a signature made before a key rotation
+    can still be checked). Check the pages, in order, with mandate.verify_export() or verify_mandate_export().
+
+    ``nextAfter``: pass it as ``after`` to get the next page; None on the last page.
+    To keep the export as JSON: ``json.dumps([p.to_dict() for p in pages])``.
+    """
+    format:      str
+    projectId:   str
+    mandateId:   str
+    generatedAt: int
+    events:      List[MandateEvent]
+    count:       int
+    nextAfter:   Optional[int] = None
+    head:        Optional[MandateExportHead] = None
+    publicKeys:  List[MandatePublicKey] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "format": self.format, "projectId": self.projectId, "mandateId": self.mandateId,
+            "generatedAt": self.generatedAt, "events": [e.to_dict() for e in self.events], "count": self.count,
+            "nextAfter": self.nextAfter, "head": self.head.to_dict() if self.head is not None else None,
+            "publicKeys": [k.to_dict() for k in self.publicKeys],
+        }
+
+
+@dataclass
+class MandateReceiptCheck:
+    """
+    What verify_mandate_receipt() / mandate.verify_receipt() found.
+
+    ``valid`` is True only if the signature, the event and the hash all check out and ``problems`` is empty.
+    ``keyTrust``: see MandateKeyTrust. ``projectId``, ``mandateId`` and ``event`` are what the receipt says, when it could be read.
+    """
+    valid:     bool
+    problems:  List[str]
+    keyTrust:  str  # MandateKeyTrust
+    projectId: Optional[str] = None
+    mandateId: Optional[str] = None
+    event:     Optional[MandateEvent] = None
+
+
+@dataclass
+class MandateExportCheck:
+    """
+    What verify_mandate_export() / mandate.verify_export() found.
+
+    Attributes
+    ----------
+    valid : bool
+        Every event follows the one before it and is what it says it is, and every signature that is in the export
+        verifies. ``problems`` lists what does not.
+    problems : list[str]
+    notes : list[str]
+        Things that are not wrong but limit what was checked (for example: the export starts at event 40).
+    keyTrust : str
+        See MandateKeyTrust.
+    projectId, mandateId : str
+    events : int
+        Events checked.
+    lastSeq : int
+    checkpoints : int
+        Checkpoints whose signature and covered event were checked.
+    sealedThrough : int
+        Every event up to this seq is sealed by a verified checkpoint.
+    headChecked : bool
+        The signed live head was there and matches the chain.
+    complete : bool
+        The log starts at event 1, ends with a verified checkpoint that seals everything before it, and nothing follows.
+        A log that is ``valid`` but not ``complete`` has events at its end that only the signed head (or a receipt you
+        hold) protects.
+    """
+    valid:         bool
+    problems:      List[str]
+    notes:         List[str]
+    keyTrust:      str  # MandateKeyTrust
+    projectId:     str = ""
+    mandateId:     str = ""
+    events:        int = 0
+    lastSeq:       int = 0
+    checkpoints:   int = 0
+    sealedThrough: int = 0
+    headChecked:   bool = False
+    complete:      bool = False

@@ -10,7 +10,7 @@ Use this in FastAPI, aiohttp, or any asyncio-based application.
 from __future__ import annotations
 
 import re
-from typing import Any, AsyncIterator, Dict, List, Optional, Union
+from typing import Any, AsyncIterator, Dict, List, Optional, Sequence, Union
 
 try:
     import httpx
@@ -38,9 +38,17 @@ from .types import (
     MandateEmitMandate,
     MandateEmitResult,
     MandateEmitUsage,
+    MandateEvent,
+    MandateEventsQueryResult,
+    MandateEventsResult,
+    MandateExportCheck,
+    MandateExportPage,
     MandateGetResult,
     MandateListResult,
     MandatePatchResult,
+    MandateProjectEvent,
+    MandatePublicKeysResult,
+    MandateReceiptCheck,
     MandateVerifyResult,
     MonthlyEntry,
     PackEntry,
@@ -62,14 +70,24 @@ from .types import (
 )
 from .types import Mandate as MandateState
 from .mandate import (
+    _change_body,
     _emit_body as _mandate_emit_body,
+    _events_path,
+    _export_path,
     _list_path as _mandate_list_path,
     _mandate_path,
     _parse_emit_result as _mandate_parse_emit_result,
+    _parse_events_query_result,
+    _parse_events_result,
+    _parse_export_page,
     _parse_list_result as _mandate_parse_list_result,
+    _parse_patch_result,
+    _parse_public_keys_result,
     _parse_verify_response as _mandate_parse_verify_response,
+    _query_events_path,
     _verify_body as _mandate_verify_body,
 )
+from .mandate_audit import _as_list, _run_export_check, _run_receipt_check
 
 DEFAULT_BASE_URL = "https://api.fipsign.dev"
 DEFAULT_TIMEOUT  = 10
@@ -629,10 +647,12 @@ class AsyncMandate:
         budget_total: int,
         expires_in_seconds: int,
         agent_public_key: Optional[str] = None,
+        *,
+        correlation_id: Optional[str] = None,
     ) -> MandateEmitResult:
         """Issue a new mandate. Cost: 2 tokens. See MandateClient.emit() for full docs."""
         body = _mandate_emit_body(
-            agent_id, issued_by, scope, budget_total, expires_in_seconds, agent_public_key
+            agent_id, issued_by, scope, budget_total, expires_in_seconds, agent_public_key, correlation_id
         )
         data = await self._client._request("POST", "/mandate", json=body)
         return _mandate_parse_emit_result(data)
@@ -644,12 +664,16 @@ class AsyncMandate:
         cost: int,
         *,
         agent_signature: Optional[PQToken] = None,
+        receipt: bool = False,
+        correlation_id: Optional[str] = None,
     ) -> MandateVerifyResult:
         """
         Check authorization. Never raises. See MandateClient.verify() for
         the full explanation, including why this bypasses self._client._request().
+        ``receipt=True`` asks for FIPSign's signature over the event of this call;
+        ``correlation_id`` is your own id for it.
         """
-        body, problem = _mandate_verify_body(token, action, cost, agent_signature)
+        body, problem = _mandate_verify_body(token, action, cost, agent_signature, receipt, correlation_id)
         if body is None:
             return MandateVerifyResult(result="denied", reason=problem, failure="rejected")
 
@@ -674,54 +698,35 @@ class AsyncMandate:
             resp.status_code, data, parse_retry_after(resp.headers.get("Retry-After"))
         )
 
-    async def narrow(self, mandate_id: str, scope: List[str]) -> MandatePatchResult:
+    async def narrow(
+        self, mandate_id: str, scope: List[str], *, correlation_id: Optional[str] = None
+    ) -> MandatePatchResult:
         """Shrink scope. Free, monotonic. See MandateClient.narrow() for full docs."""
         data = await self._client._request(
-            "PATCH", _mandate_path(mandate_id), json={"action": "narrow", "scope": scope}
+            "PATCH", _mandate_path(mandate_id), json=_change_body("narrow", correlation_id, scope=scope)
         )
-        return MandatePatchResult(
-            id=data["id"],
-            status=data["status"],
-            scope=data.get("scope"),
-            updatedAt=data.get("updatedAt"),
-        )
+        return _parse_patch_result(data)
 
-    async def suspend(self, mandate_id: str) -> MandatePatchResult:
+    async def suspend(self, mandate_id: str, *, correlation_id: Optional[str] = None) -> MandatePatchResult:
         """Pause a mandate. Free, idempotent. See MandateClient.suspend() for full docs."""
         data = await self._client._request(
-            "PATCH", _mandate_path(mandate_id), json={"action": "suspend"}
+            "PATCH", _mandate_path(mandate_id), json=_change_body("suspend", correlation_id)
         )
-        return MandatePatchResult(
-            id=data["id"],
-            status=data["status"],
-            scope=data.get("scope"),
-            updatedAt=data.get("updatedAt"),
-            message=data.get("message"),
-        )
+        return _parse_patch_result(data, with_message=True)
 
-    async def resume(self, mandate_id: str) -> MandatePatchResult:
+    async def resume(self, mandate_id: str, *, correlation_id: Optional[str] = None) -> MandatePatchResult:
         """Reactivate a suspended mandate. Free. See MandateClient.resume() for full docs."""
         data = await self._client._request(
-            "PATCH", _mandate_path(mandate_id), json={"action": "resume"}
+            "PATCH", _mandate_path(mandate_id), json=_change_body("resume", correlation_id)
         )
-        return MandatePatchResult(
-            id=data["id"],
-            status=data["status"],
-            scope=data.get("scope"),
-            updatedAt=data.get("updatedAt"),
-        )
+        return _parse_patch_result(data)
 
-    async def revoke(self, mandate_id: str) -> MandatePatchResult:
+    async def revoke(self, mandate_id: str, *, correlation_id: Optional[str] = None) -> MandatePatchResult:
         """Permanently terminate a mandate. Free, irreversible. See MandateClient.revoke()."""
         data = await self._client._request(
-            "PATCH", _mandate_path(mandate_id), json={"action": "revoke"}
+            "PATCH", _mandate_path(mandate_id), json=_change_body("revoke", correlation_id)
         )
-        return MandatePatchResult(
-            id=data["id"],
-            status=data["status"],
-            scope=data.get("scope"),
-            updatedAt=data.get("updatedAt"),
-        )
+        return _parse_patch_result(data)
 
     async def get(self, mandate_id: str) -> MandateGetResult:
         """Get a mandate's current state by id. Free. See MandateClient.get() for full docs."""
@@ -763,6 +768,150 @@ class AsyncMandate:
                     "API_ERROR",
                 )
             cursor = page.nextCursor
+
+    # ── audit: events, export, receipts ──────────────────────────────────────
+    # Mirrors MandateClient: see mandate.py for the full documentation. All of these are free and need the project API key.
+
+    async def events(
+        self, mandate_id: str, *, after: Optional[int] = None, limit: Optional[int] = None
+    ) -> MandateEventsResult:
+        """One page of the audit log of a mandate, oldest first. See MandateClient.events()."""
+        data = await self._client._request("GET", _events_path(mandate_id, after, limit))
+        return _parse_events_result(data, mandate_id)
+
+    async def events_all(self, mandate_id: str, *, limit: Optional[int] = None) -> AsyncIterator[MandateEvent]:
+        """
+        Every event of a mandate, oldest first, following ``nextAfter``. Use ``async for``.
+        See MandateClient.events_all().
+
+        Examples
+        --------
+        >>> async for e in pq.mandate.events_all(mandate_id):
+        ...     print(e.seq, e.type)
+        """
+        after = 0
+        while True:
+            page = await self.events(mandate_id, after=after, limit=limit)
+            for e in page.events:
+                yield e
+            if page.nextAfter is None:
+                return
+            if page.nextAfter <= after:
+                raise PQAuthError("Pagination did not advance: the API returned a nextAfter that is not after the last one", "API_ERROR")
+            after = page.nextAfter
+
+    async def query_events(
+        self,
+        *,
+        mandate_id: Optional[str] = None,
+        type: Optional[str] = None,
+        action: Optional[str] = None,
+        key_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        from_: Optional[int] = None,
+        to: Optional[int] = None,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> MandateEventsQueryResult:
+        """Search the events of all the mandates of the project, newest first. See MandateClient.query_events()."""
+        data = await self._client._request(
+            "GET",
+            _query_events_path(mandate_id, type, action, key_id, correlation_id, trace_id, from_, to, limit, cursor),
+        )
+        return _parse_events_query_result(data)
+
+    async def query_events_all(
+        self,
+        *,
+        mandate_id: Optional[str] = None,
+        type: Optional[str] = None,
+        action: Optional[str] = None,
+        key_id: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        from_: Optional[int] = None,
+        to: Optional[int] = None,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> AsyncIterator[MandateProjectEvent]:
+        """
+        Every event that matches the filters, newest first, following ``nextCursor``. Use ``async for``.
+        See MandateClient.query_events_all().
+
+        Examples
+        --------
+        >>> async for e in pq.mandate.query_events_all(type="verify_denied"):
+        ...     print(e.mandateId, e.at)
+        """
+        while True:
+            page = await self.query_events(
+                mandate_id=mandate_id, type=type, action=action, key_id=key_id, correlation_id=correlation_id,
+                trace_id=trace_id, from_=from_, to=to, limit=limit, cursor=cursor,
+            )
+            for e in page.events:
+                yield e
+            if page.nextCursor is None:
+                return
+            if page.nextCursor == cursor:
+                raise PQAuthError("Pagination did not advance: the API returned the same cursor twice", "API_ERROR")
+            cursor = page.nextCursor
+
+    async def export(
+        self, mandate_id: str, *, after: Optional[int] = None, limit: Optional[int] = None
+    ) -> MandateExportPage:
+        """One page of the export of a mandate. See MandateClient.export()."""
+        data = await self._client._request("GET", _export_path(mandate_id, after, limit))
+        return _parse_export_page(data)
+
+    async def export_all(self, mandate_id: str, *, limit: Optional[int] = None) -> List[MandateExportPage]:
+        """Every page of the export of a mandate, in order, ready for verify_mandate_export(). See MandateClient.export_all()."""
+        pages: List[MandateExportPage] = []
+        after = 0
+        while True:
+            page = await self.export(mandate_id, after=after, limit=limit)
+            pages.append(page)
+            if page.nextAfter is None:
+                return pages
+            if page.nextAfter <= after:
+                raise PQAuthError("Pagination did not advance: the API returned a nextAfter that is not after the last one", "API_ERROR")
+            after = page.nextAfter
+
+    async def public_keys(self) -> MandatePublicKeysResult:
+        """Every public key this project has signed with, the retired ones too. See MandateClient.public_keys()."""
+        data = await self._client._request("GET", "/public-keys")
+        return _parse_public_keys_result(data)
+
+    async def verify_receipt(
+        self,
+        receipt: Any,
+        *,
+        public_key: Union[str, Sequence[Any], None] = None,
+        pin_fingerprint: Union[str, Sequence[Any], None] = None,
+        keys: Any = None,
+        expect_project_id: Optional[str] = None,
+        expect_mandate_id: Optional[str] = None,
+    ) -> MandateReceiptCheck:
+        """
+        Check a receipt on your own machine; with neither ``public_key`` nor ``pin_fingerprint`` it uses the keys FIPSign
+        lists and says ``keyTrust="fipsign"``. See MandateClient.verify_receipt().
+        """
+        only_public_key = len(_as_list(public_key)) > 0 and len(_as_list(pin_fingerprint)) == 0
+        listed = (await self.public_keys()).keys if keys is None and not only_public_key else []
+        return _run_receipt_check(
+            receipt, public_key, pin_fingerprint, keys, expect_project_id, expect_mandate_id, listed, "fipsign"
+        )
+
+    async def verify_export(
+        self,
+        pages: Any,
+        *,
+        public_key: Union[str, Sequence[Any], None] = None,
+        pin_fingerprint: Union[str, Sequence[Any], None] = None,
+        keys: Any = None,
+    ) -> MandateExportCheck:
+        """Check the pages of an export on your own machine. Makes no request. See MandateClient.verify_export()."""
+        return _run_export_check(pages, public_key, pin_fingerprint, keys, "fipsign")
 
 
 # ─── AsyncPQAuth ──────────────────────────────────────────────────────────────

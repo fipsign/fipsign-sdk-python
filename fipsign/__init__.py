@@ -17,6 +17,11 @@ Key pair generation:
 Mandate proof of possession (agent side):
   generate_agent_key_pair() — key pair of an agent (ML-DSA-44/65/87); the agent keeps secretKey.
   sign_agent_call()         — signs ONE mandate call; pass it to pq.mandate.verify(agent_signature=...).
+
+Mandate audit (FIPSign signs what it records about a mandate; you check it on your own machine):
+  verify_mandate_receipt()  — checks a receipt (pq.mandate.emit()/suspend()/... return one) with a key you trust.
+  verify_mandate_export()   — checks the whole log of a mandate (pq.mandate.export_all()): chain, checkpoints, signed head.
+  public_key_fingerprint()  — the fingerprint of a public key: save it and pass it as pin_fingerprint.
 """
 
 from typing import TYPE_CHECKING
@@ -26,6 +31,7 @@ from .errors import PQAuthError
 from .middleware import flask_middleware, fastapi_middleware
 from .ca import generate_key_pair
 from .agent import generate_agent_key_pair, sign_agent_call
+from .mandate_audit import public_key_fingerprint, verify_mandate_export, verify_mandate_receipt
 from .types import (
     # Token
     PQToken,
@@ -59,6 +65,12 @@ from .types import (
     MandateVerifyResult, MandateVerifyFailure, MandatePatchResult,
     MandateGetResult, MandateListResult,
     MandateDenyReason,
+    # Mandate audit
+    MandateEvent, MandateEventType, MandateProjectEvent, MandateReceipt,
+    MandatePublicKey, MandatePublicKeysResult,
+    MandateLogHead, MandateEventsResult, MandateEventsQueryResult,
+    MandateExportHead, MandateExportPage,
+    MandateKeyTrust, MandateReceiptCheck, MandateExportCheck,
 )
 
 if TYPE_CHECKING:
@@ -110,6 +122,13 @@ __all__ = [
     "MandateVerifyResult", "MandateVerifyFailure", "MandatePatchResult",
     "MandateGetResult", "MandateListResult",
     "MandateDenyReason",
+    # Mandate audit
+    "verify_mandate_receipt", "verify_mandate_export", "public_key_fingerprint",
+    "MandateEvent", "MandateEventType", "MandateProjectEvent", "MandateReceipt",
+    "MandatePublicKey", "MandatePublicKeysResult",
+    "MandateLogHead", "MandateEventsResult", "MandateEventsQueryResult",
+    "MandateExportHead", "MandateExportPage",
+    "MandateKeyTrust", "MandateReceiptCheck", "MandateExportCheck",
 ]
 
 
@@ -130,4 +149,4 @@ try:
     from importlib.metadata import version as _version
     __version__ = _version("fipsign-sdk")
 except Exception:
-    __version__ = "0.15.0"  # fallback si el paquete no está instalado
+    __version__ = "0.16.0"  # fallback si el paquete no está instalado
